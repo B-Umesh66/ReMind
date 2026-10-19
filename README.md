@@ -5,11 +5,12 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
 ## What is implemented
 
 - Per-user registration/login and ownership-scoped API queries.
-- PDF, DOCX, TXT, and Markdown ingestion; text extraction, chunking, status tracking, and cascade deletion.
+- PDF, DOCX, TXT, and Markdown ingestion; text extraction, chunking, embedding attempts, status tracking, retry, and cleanup.
 - A polished React learning dashboard with real API-backed metrics and honest empty states.
 - Knowledge concepts seeded only from explicit document headings (not claimed as mastery).
 - Immutable-ready profile structure, deterministic decay-risk calculation, and revision recommendations.
-- Ollama health/model configuration visibility. No paid AI provider or silent fallback.
+- Ollama embedding, bounded grounded RAG, citations, health/model configuration visibility, and no paid-provider fallback.
+- Assessment creation/taking, immutable attempt records, deterministic grading baseline, profile updates, graph API, and analytics.
 
 ## Run locally
 
@@ -22,9 +23,13 @@ For local AI, install [Ollama](https://ollama.com), then run `ollama pull qwen3:
 
 ## Architecture and deliberate scope
 
-The shipped vertical slice prioritizes the real data path: user → document → extract/chunk → concept/profile → decay → revision dashboard. PostgreSQL/pgvector configuration is included, but vector embedding, RAG generation, assessment generation/evaluation, Alembic migrations, JWT hardening, and the full graph UI are explicitly outstanding. They should be added before describing this as a complete academic submission.
+The data path is user → document → extract/chunk → Ollama embedding → retrieval → assessment evidence → decay → revision. SQLite remains a lightweight development fallback. PostgreSQL is the intended deployment database; the current portable embedding store uses JSON vectors so SQLite tests can run, and should be migrated to a pgvector column/index before large-scale use.
 
-Sessions are signed, expiring JWTs and passwords are PBKDF2-SHA256-hashed. Set a strong `JWT_SECRET` in `.env` before deployment.
+Sessions are signed, expiring JWTs and passwords use Argon2 (legacy PBKDF2 hashes are upgraded at next login). Set a strong `JWT_SECRET` in `.env` before deployment.
+
+## Migrations
+
+For a fresh database: `cd backend; alembic upgrade head`. Existing pre-Alembic development databases must be backed up and inspected before `alembic stamp head`; do not run that command blindly on production data.
 
 ## Decay score
 
