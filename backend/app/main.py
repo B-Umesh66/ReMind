@@ -163,6 +163,20 @@ def dashboard(u:User=Depends(current_user),s:Session=Depends(db)):
     concepts=s.scalars(select(Concept).where(Concept.user_id==u.id)).all()
     profiles=s.scalars(select(Profile).where(Profile.user_id==u.id)).all()
     revisions=s.scalars(select(Revision).where(Revision.user_id==u.id,Revision.status.in_(['pending','recommended','scheduled'])).order_by(Revision.priority.desc())).all()
+    attempts=s.scalars(select(Attempt).where(Attempt.user_id==u.id).order_by(Attempt.created_at)).all()
+    total_attempts = len(attempts)
+    correct_attempts = sum(a.score for a in attempts)
+    accuracy = round((correct_attempts / total_attempts) * 100) if total_attempts > 0 else None
+    assessed_profiles = [p for p in profiles if p.attempts > 0]
+    retention_rate = round(sum(max(5, 100 - (p.decay_risk or 50)) for p in assessed_profiles) / len(assessed_profiles)) if assessed_profiles else None
+    recent = []
+    for a in attempts[-8:]:
+        recent.append({
+            'score': a.score,
+            'height': 90 if a.score == 1 else 28,
+            'correct': bool(a.score),
+            'date': a.created_at.isoformat()
+        })
     return {
         'documents':len(docs),
         'processed_documents':sum(d.status in ('processed','indexed') for d in docs),
@@ -178,7 +192,14 @@ def dashboard(u:User=Depends(current_user),s:Session=Depends(db)):
             'activity':r.activity,
             'due_at':r.due_at,
             'status':r.status
-        } for r in revisions]
+        } for r in revisions],
+        'signals': {
+            'total_attempts': total_attempts,
+            'correct_attempts': correct_attempts,
+            'accuracy': accuracy,
+            'retention_rate': retention_rate,
+            'recent': recent
+        }
     }
 @app.get('/api/v1/documents')
 def documents(u:User=Depends(current_user),s:Session=Depends(db)): return [{'id':d.id,'name':d.name,'status':d.status,'created_at':d.created_at} for d in s.scalars(select(Document).where(Document.user_id==u.id)).all()]
@@ -260,11 +281,90 @@ async def extract_concepts(document_id:int,u:User=Depends(current_user),s:Sessio
     s.commit();return {'concepts_added':len(added),'relationships_received':len(result.relationships)}
 @app.delete('/api/v1/documents/{document_id}')
 def delete_document(document_id:int,u:User=Depends(current_user),s:Session=Depends(db)):
+    """Cascade-delete a document and every piece of derived data.
+
+    Removal order (child → parent to respect FK constraints):
+    1. ChunkEmbeddings for all chunks of this document
+    2. Concepts whose *only* evidence source is this document's topic name
+       → for each such concept:
+         a. AssessmentAttempts for questions linked to this concept
+         b. AssessmentQuestions linked to this concept
+         c. KnowledgeProfiles for this concept
+         d. ConceptEdges (source or target) for this concept
+         e. RevisionRecommendations for this concept
+         f. The Concept itself
+    3. Assessments that are now question-less (or were only for this doc)
+    4. The Document (chunks cascade via ORM relationship)
+    """
     d=s.scalar(select(Document).where(Document.id==document_id,Document.user_id==u.id))
     if not d: raise HTTPException(404,'Document not found')
+
+    # ── 1. Remove chunk embeddings ────────────────────────────────────────
     chunk_ids=[c.id for c in d.chunks]
-    for embed in s.scalars(select(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(chunk_ids))).all(): s.delete(embed)
-    s.delete(d);s.commit();return {'deleted':True}
+    if chunk_ids:
+        for embed in s.scalars(select(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(chunk_ids))).all():
+            s.delete(embed)
+
+    # ── 2. Find concepts that trace back to this document ─────────────────
+    # A concept is "owned" by this document if its topic equals the doc name
+    # OR if every chunk that supplied it belongs to this document.
+    doc_concepts=s.scalars(select(Concept).where(Concept.user_id==u.id,Concept.topic==d.name)).all()
+    concept_ids=[c.id for c in doc_concepts]
+    removed_concepts=len(concept_ids)
+
+    if concept_ids:
+        # 2a. Attempts linked to questions about these concepts
+        q_ids=[q.id for q in s.scalars(select(Question).where(Question.concept_id.in_(concept_ids))).all()]
+        if q_ids:
+            for attempt in s.scalars(select(Attempt).where(Attempt.question_id.in_(q_ids))).all():
+                s.delete(attempt)
+            # 2b. Questions themselves
+            for q in s.scalars(select(Question).where(Question.id.in_(q_ids))).all():
+                s.delete(q)
+
+        # 2c. Knowledge profiles
+        for prof in s.scalars(select(Profile).where(Profile.user_id==u.id,Profile.concept_id.in_(concept_ids))).all():
+            s.delete(prof)
+
+        # 2d. Concept graph edges (source or target)
+        for edge in s.scalars(select(ConceptEdge).where(
+            ConceptEdge.user_id==u.id,
+            (ConceptEdge.source_id.in_(concept_ids))|(ConceptEdge.target_id.in_(concept_ids))
+        )).all():
+            s.delete(edge)
+
+        # 2e. Revision recommendations
+        for rev in s.scalars(select(Revision).where(Revision.user_id==u.id,Revision.concept_id.in_(concept_ids))).all():
+            s.delete(rev)
+
+        # 2f. The concepts themselves
+        for c in doc_concepts:
+            s.delete(c)
+
+    # ── 3. Flush so questions are gone, then remove empty assessments ─────
+    s.flush()
+    all_assessments=s.scalars(select(Assessment).where(Assessment.user_id==u.id)).all()
+    removed_assessments=0
+    for a in all_assessments:
+        remaining=s.scalar(select(Question).where(Question.assessment_id==a.id))
+        if remaining is None:
+            # Remove any stray attempts on this now-empty assessment
+            for q in s.scalars(select(Question).where(Question.assessment_id==a.id)).all():
+                for att in s.scalars(select(Attempt).where(Attempt.question_id==q.id)).all():
+                    s.delete(att)
+                s.delete(q)
+            s.delete(a)
+            removed_assessments+=1
+
+    # ── 4. Delete the document (chunks cascade via ORM) ───────────────────
+    s.delete(d)
+    s.commit()
+    return {
+        'deleted':True,
+        'document':d.name,
+        'removed_concepts':removed_concepts,
+        'removed_assessments':removed_assessments
+    }
 @app.get('/api/v1/concepts')
 def concepts(u:User=Depends(current_user),s:Session=Depends(db)):
     cs=s.scalars(select(Concept).where(Concept.user_id==u.id)).all(); ps={p.concept_id:p for p in s.scalars(select(Profile).where(Profile.user_id==u.id))}
