@@ -19,7 +19,11 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
 3. Frontend: `cd frontend`, run `npm install`, then `npm run dev`.
 4. Open `http://localhost:5173`. Register with any email and an 8+ character password.
 
+Do **not** open `frontend/index.html` by double-clicking it: browser module security will leave a blank page. Use Vite's URL above. For a single-server preview, run `npm run build` inside `frontend`, then start the backend and open `http://127.0.0.1:8000/`.
+
 For local AI, install [Ollama](https://ollama.com), then run `ollama pull qwen3:4b` and `ollama pull qwen3-embedding:0.6b`. ReMind detects availability at `GET /api/v1/health`; it never claims a generative action succeeded when Ollama is unavailable.
+
+After downloading models, start the local service with `ollama serve`. See [the Ollama integration pass notes](docs/PASS_OLLAMA_INTEGRATION.md) for the implemented workflows and verification status.
 
 ## Architecture and deliberate scope
 
