@@ -1,6 +1,6 @@
 import { Component, ReactNode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AlertCircle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, User, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, Trash2, User, X } from 'lucide-react'
 import './styles.css'
 
 const API = '/api/v1'
@@ -230,6 +230,13 @@ function App() {
                 </button>
                 <button
                   className="workspace-dropdown-item danger"
+                  onClick={() => { setProfileModalTab('security'); setProfileModalOpen(true); setProfileMenuOpen(false); }}
+                >
+                  <Trash2 size={15} />
+                  Delete Account...
+                </button>
+                <button
+                  className="workspace-dropdown-item"
                   onClick={handleSignOut}
                 >
                   <X size={15} />
@@ -383,10 +390,17 @@ function ProfileModal({
   const [profileNotice, setProfileNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordNotice, setPasswordNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deletePassword, setDeletePassword] = useState('')
+  const [deleteNotice, setDeleteNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [health, setHealth] = useState<any>(null)
 
   useEffect(() => {
     setTab(initialTab)
+    setShowDeleteConfirm(false)
+    setDeletePassword('')
+    setDeleteNotice(null)
   }, [initialTab, isOpen])
 
   useEffect(() => {
@@ -474,6 +488,36 @@ function ProfileModal({
       setPasswordNotice({ type: 'error', text: 'Network error connecting to backend.' })
     } finally {
       setPasswordSaving(false)
+    }
+  }
+
+  const handleDeleteAccount = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setDeleteNotice(null)
+    if (!deletePassword) {
+      setDeleteNotice({ type: 'error', text: 'Enter your password to confirm permanent account deletion.' })
+      return
+    }
+    setIsDeleting(true)
+    try {
+      const r = await fetch(API + '/auth/account', {
+        method: 'DELETE',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: deletePassword }),
+      })
+      const data = await r.json()
+      if (r.ok) {
+        setDeleteNotice({ type: 'success', text: 'Account and all data deleted. Returning to sign-in…' })
+        setTimeout(() => {
+          onSignOut()
+        }, 1300)
+      } else {
+        setDeleteNotice({ type: 'error', text: data.detail || 'Could not delete account. Check your password.' })
+      }
+    } catch {
+      setDeleteNotice({ type: 'error', text: 'Network error connecting to backend.' })
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -758,6 +802,86 @@ function ProfileModal({
                 >
                   Sign Out
                 </button>
+              </div>
+
+              <div className="workspace-dropdown-divider" />
+
+              <div className="info-card" style={{ borderColor: 'rgba(217,56,56,0.3)', background: 'rgba(217,56,56,0.03)' }}>
+                <div className="info-card-header">
+                  <h4 style={{ color: '#c93b3b', display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <Trash2 size={16} /> Delete Account & Permanent Data Wipe
+                  </h4>
+                  <span className="badge" style={{ background: 'rgba(217,56,56,0.12)', color: '#c93b3b' }}>Danger Zone</span>
+                </div>
+                <p style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                  Permanently delete your account along with all study materials, processed chunks, knowledge graph concepts, assessment records, learning decay history, and revision recommendations.
+                </p>
+
+                {!showDeleteConfirm ? (
+                  <button
+                    type="button"
+                    className="danger-btn"
+                    style={{ alignSelf: 'flex-start', marginTop: 10 }}
+                    onClick={() => { setShowDeleteConfirm(true); setDeleteNotice(null); }}
+                  >
+                    <Trash2 size={15} />
+                    Delete Account & Wipe All Data
+                  </button>
+                ) : (
+                  <form onSubmit={handleDeleteAccount} className="danger-box">
+                    <h5>
+                      <AlertTriangle size={17} /> Confirm Permanent Deletion
+                    </h5>
+                    <p style={{ color: '#c93b3b', fontWeight: 600 }}>
+                      This action is permanent and cannot be undone. All of the following will be wiped from the database:
+                    </p>
+                    <ul>
+                      <li>All uploaded study documents & text chunks</li>
+                      <li>All knowledge graph concepts & connections</li>
+                      <li>All practice questions, quizzes & assessment history</li>
+                      <li>All learning decay curves & revision recommendations</li>
+                      <li>Your user account credentials & active session</li>
+                    </ul>
+
+                    {deleteNotice && (
+                      <div className={`profile-alert ${deleteNotice.type}`}>
+                        {deleteNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                        {deleteNotice.text}
+                      </div>
+                    )}
+
+                    <div className="profile-field-group" style={{ marginTop: 4 }}>
+                      <label style={{ color: '#c93b3b' }}>Enter your password to confirm deletion</label>
+                      <input
+                        type="password"
+                        value={deletePassword}
+                        onChange={e => setDeletePassword(e.target.value)}
+                        placeholder="Current account password"
+                        disabled={isDeleting}
+                        required
+                        autoFocus
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+                      <button
+                        type="submit"
+                        className="danger-btn"
+                        disabled={isDeleting || !deletePassword}
+                      >
+                        {isDeleting ? 'Deleting account and wiping data…' : 'Permanently Delete Everything'}
+                      </button>
+                      <button
+                        type="button"
+                        className="light-btn"
+                        disabled={isDeleting}
+                        onClick={() => { setShowDeleteConfirm(false); setDeletePassword(''); setDeleteNotice(null); }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             </div>
           )}

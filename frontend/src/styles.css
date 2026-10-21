@@ -225,9 +225,16 @@ header h2{font-size:var(--fs-h2);letter-spacing:-1px;margin-top:6px;color:var(--
 .upload,.dark-btn,.light-btn{border:0;border-radius:9px;padding:11px 15px;font-size:var(--fs-sm);font-weight:700;font-family:inherit;display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:opacity .15s,filter .15s}
 .upload,.dark-btn{background:var(--bg-dark-btn);color:var(--text-dark-btn)}
 .light-btn{background:var(--bg-light-btn);color:var(--text-light-btn)}
+.danger-btn{border:0;border-radius:9px;padding:10px 15px;font-size:var(--fs-sm);font-weight:700;font-family:inherit;display:inline-flex;align-items:center;gap:8px;cursor:pointer;background:#c93b3b;color:#fff;transition:opacity .15s,filter .15s}
+.danger-btn:disabled{opacity:.6;cursor:wait}
+.danger-btn:hover:not(:disabled){filter:brightness(1.12)}
 .light-btn:disabled,.dark-btn:disabled,.upload:disabled{opacity:.65;cursor:wait}
 .upload:hover,.dark-btn:hover{filter:brightness(1.1)}
 .light-btn:hover{filter:brightness(.97)}
+.danger-box{background:rgba(217,56,56,0.06);border:1px solid rgba(217,56,56,0.28);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:12px;margin-top:10px}
+.danger-box h5{margin:0;font-size:var(--fs-sm);font-weight:700;color:#c93b3b;display:flex;align-items:center;gap:8px}
+.danger-box p{margin:0;font-size:var(--fs-xs);color:var(--text-muted);line-height:1.5}
+.danger-box ul{margin:0;padding-left:18px;font-size:var(--fs-xs);color:var(--text-muted);line-height:1.6}
 
 /* ---------- Hero ---------- */
 .hero{background:var(--bg-hero);border-radius:20px;min-height:300px;padding:42px 50px;display:flex;justify-content:space-between;overflow:hidden;position:relative;transition:background .25s}

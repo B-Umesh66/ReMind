@@ -108,6 +108,7 @@ app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173'], allo
 class Credentials(BaseModel): email: str; password: str = Field(min_length=8)
 class ProfileUpdate(BaseModel): display_name: Optional[str] = Field(default='', max_length=120); workspace_name: Optional[str] = Field(default='Personal Workspace', max_length=120)
 class PasswordChange(BaseModel): current_password: str; new_password: str = Field(min_length=8)
+class AccountDelete(BaseModel): password: str
 class RevisionUpdate(BaseModel): status: str
 class AskRequest(BaseModel): query: str = Field(min_length=3,max_length=2000)
 class AssessmentCreate(BaseModel): concept_id: int; question_count: int = Field(default=3,ge=1,le=10); difficulty: str = Field(default='medium', pattern='^(easy|medium|hard)$')
@@ -172,6 +173,70 @@ def update_profile(body: ProfileUpdate, u:User=Depends(current_user), s:Session=
 def change_password(body: PasswordChange, u:User=Depends(current_user), s:Session=Depends(db)):
     if not passwords.verify(body.current_password, u.password_hash): raise HTTPException(400, 'Current password is incorrect')
     u.password_hash = passwords.hash(body.new_password); s.commit(); return {'message': 'Password updated successfully'}
+@app.delete('/api/v1/auth/account')
+def delete_account(body: AccountDelete, u:User=Depends(current_user), s:Session=Depends(db)):
+    if not passwords.verify(body.password, u.password_hash):
+        raise HTTPException(400, 'Current password is required to delete your account.')
+    user_id = u.id
+
+    # 1. Chunk embeddings belonging to all chunks of user documents
+    user_doc_ids = list(s.scalars(select(Document.id).where(Document.user_id == user_id)).all())
+    if user_doc_ids:
+        user_chunk_ids = list(s.scalars(select(Chunk.id).where(Chunk.document_id.in_(user_doc_ids))).all())
+        if user_chunk_ids:
+            for ce in s.scalars(select(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(user_chunk_ids))).all():
+                s.delete(ce)
+
+    # 2. Assessment attempts by user
+    for attempt in s.scalars(select(Attempt).where(Attempt.user_id == user_id)).all():
+        s.delete(attempt)
+
+    # 3. Assessment questions belonging to user's assessments
+    user_assessment_ids = list(s.scalars(select(Assessment.id).where(Assessment.user_id == user_id)).all())
+    if user_assessment_ids:
+        user_question_ids = list(s.scalars(select(Question.id).where(Question.assessment_id.in_(user_assessment_ids))).all())
+        if user_question_ids:
+            for att in s.scalars(select(Attempt).where(Attempt.question_id.in_(user_question_ids))).all():
+                s.delete(att)
+            for q in s.scalars(select(Question).where(Question.id.in_(user_question_ids))).all():
+                s.delete(q)
+
+    # 4. User assessments
+    for a in s.scalars(select(Assessment).where(Assessment.user_id == user_id)).all():
+        s.delete(a)
+
+    # 5. User revisions
+    for rev in s.scalars(select(Revision).where(Revision.user_id == user_id)).all():
+        s.delete(rev)
+
+    # 6. User concept edges
+    for edge in s.scalars(select(ConceptEdge).where(ConceptEdge.user_id == user_id)).all():
+        s.delete(edge)
+
+    # 7. User knowledge profiles
+    for prof in s.scalars(select(Profile).where(Profile.user_id == user_id)).all():
+        s.delete(prof)
+
+    # 8. User concept questions
+    user_concept_ids = list(s.scalars(select(Concept.id).where(Concept.user_id == user_id)).all())
+    if user_concept_ids:
+        for q in s.scalars(select(Question).where(Question.concept_id.in_(user_concept_ids))).all():
+            for att in s.scalars(select(Attempt).where(Attempt.question_id == q.id)).all():
+                s.delete(att)
+            s.delete(q)
+
+    # 9. User concepts
+    for c in s.scalars(select(Concept).where(Concept.user_id == user_id)).all():
+        s.delete(c)
+
+    # 10. User documents (chunks cascade)
+    for doc in s.scalars(select(Document).where(Document.user_id == user_id)).all():
+        s.delete(doc)
+
+    # 11. Finally delete the user
+    s.delete(u)
+    s.commit()
+    return {'message': 'Account and all associated learning data have been permanently deleted.'}
 @app.post('/api/v1/auth/register')
 def register(body: Credentials, s:Session=Depends(db)):
     if s.scalar(select(User).where(User.email==body.email)): raise HTTPException(409,'Email already registered')
