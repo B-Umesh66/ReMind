@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, select
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, create_engine, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .ai import provider, AIUnavailable, InvalidAIResponse
 
@@ -28,7 +28,7 @@ JWT_SECRET = os.getenv('JWT_SECRET', 'development-only-change-me')
 class Base(DeclarativeBase): pass
 class User(Base):
     __tablename__='users'
-    id: Mapped[int] = mapped_column(primary_key=True); email: Mapped[str] = mapped_column(String(255), unique=True); password_hash: Mapped[str] = mapped_column(String(128)); created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(primary_key=True); email: Mapped[str] = mapped_column(String(255), unique=True); password_hash: Mapped[str] = mapped_column(String(128)); display_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, default=''); workspace_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True, default='Personal Workspace'); created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 class Document(Base):
     __tablename__='documents'
     id: Mapped[int] = mapped_column(primary_key=True); user_id: Mapped[int] = mapped_column(ForeignKey('users.id')); name: Mapped[str] = mapped_column(String(255)); status: Mapped[str] = mapped_column(String(32), default='uploaded'); text: Mapped[str] = mapped_column(Text, default=''); created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -61,7 +61,18 @@ class Attempt(Base):
     __tablename__='assessment_attempts'
     id: Mapped[int] = mapped_column(primary_key=True); user_id: Mapped[int] = mapped_column(ForeignKey('users.id')); question_id: Mapped[int] = mapped_column(ForeignKey('assessment_questions.id')); response: Mapped[str] = mapped_column(Text); score: Mapped[int] = mapped_column(Integer); max_score: Mapped[int] = mapped_column(Integer, default=1); feedback: Mapped[str] = mapped_column(Text); grading_method: Mapped[str] = mapped_column(String(32), default='deterministic'); created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-if os.getenv('ALEMBIC_RUNNING') != '1': Base.metadata.create_all(engine)
+if os.getenv('ALEMBIC_RUNNING') != '1':
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as conn:
+            if DATABASE_URL.startswith('sqlite'):
+                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)"))]
+                if 'display_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(120) DEFAULT ''"))
+                if 'workspace_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
+            else:
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(120) DEFAULT ''"))
+                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
+    except Exception: pass
 def db():
     with SessionLocal() as s: yield s
 def token_for(user: User):
@@ -95,6 +106,8 @@ def owned_concept(s:Session, user:User, concept_id:int)->Concept:
 app=FastAPI(title='ReMind API', version='0.1.0')
 app.add_middleware(CORSMiddleware, allow_origins=['http://localhost:5173'], allow_methods=['*'], allow_headers=['*'])
 class Credentials(BaseModel): email: str; password: str = Field(min_length=8)
+class ProfileUpdate(BaseModel): display_name: Optional[str] = Field(default='', max_length=120); workspace_name: Optional[str] = Field(default='Personal Workspace', max_length=120)
+class PasswordChange(BaseModel): current_password: str; new_password: str = Field(min_length=8)
 class RevisionUpdate(BaseModel): status: str
 class AskRequest(BaseModel): query: str = Field(min_length=3,max_length=2000)
 class AssessmentCreate(BaseModel): concept_id: int; question_count: int = Field(default=3,ge=1,le=10); difficulty: str = Field(default='medium', pattern='^(easy|medium|hard)$')
@@ -145,18 +158,30 @@ async def health():
         try: models=await provider.tags()
         except AIUnavailable: ok=False
     return {'status':'ok','database':'postgresql' if DATABASE_URL.startswith('postgres') else 'sqlite development fallback','ollama_available':ok,'models':{'llm':provider.llm,'embedding':provider.embedding,'installed':models},'instructions':None if ok else 'Start Ollama with `ollama serve`, then confirm both configured models appear in `ollama list`.'}
+def user_dict(u: User) -> dict:
+    return {'id': u.id, 'email': u.email, 'display_name': getattr(u, 'display_name', '') or '', 'workspace_name': getattr(u, 'workspace_name', 'Personal Workspace') or 'Personal Workspace', 'created_at': u.created_at.isoformat() if u.created_at else None}
+
 @app.get('/api/v1/auth/me')
-def me(u:User=Depends(current_user)): return {'id':u.id,'email':u.email}
+def me(u:User=Depends(current_user)): return user_dict(u)
+@app.put('/api/v1/auth/profile')
+def update_profile(body: ProfileUpdate, u:User=Depends(current_user), s:Session=Depends(db)):
+    if body.display_name is not None: u.display_name = body.display_name.strip()
+    if body.workspace_name is not None and body.workspace_name.strip(): u.workspace_name = body.workspace_name.strip()
+    s.commit(); s.refresh(u); return user_dict(u)
+@app.post('/api/v1/auth/change-password')
+def change_password(body: PasswordChange, u:User=Depends(current_user), s:Session=Depends(db)):
+    if not passwords.verify(body.current_password, u.password_hash): raise HTTPException(400, 'Current password is incorrect')
+    u.password_hash = passwords.hash(body.new_password); s.commit(); return {'message': 'Password updated successfully'}
 @app.post('/api/v1/auth/register')
 def register(body: Credentials, s:Session=Depends(db)):
     if s.scalar(select(User).where(User.email==body.email)): raise HTTPException(409,'Email already registered')
-    u=User(email=body.email,password_hash=passwords.hash(body.password)); s.add(u); s.commit(); s.refresh(u); return {'access_token':token_for(u),'user':{'id':u.id,'email':u.email}}
+    u=User(email=body.email,password_hash=passwords.hash(body.password)); s.add(u); s.commit(); s.refresh(u); return {'access_token':token_for(u),'user':user_dict(u)}
 @app.post('/api/v1/auth/login')
 def login(body: Credentials,s:Session=Depends(db)):
     u=s.scalar(select(User).where(User.email==body.email))
     if not u or not passwords.verify(body.password, u.password_hash): raise HTTPException(401,'Incorrect email or password')
     if passwords.needs_update(u.password_hash): u.password_hash=passwords.hash(body.password);s.commit()
-    return {'access_token':token_for(u),'user':{'id':u.id,'email':u.email}}
+    return {'access_token':token_for(u),'user':user_dict(u)}
 @app.get('/api/v1/dashboard')
 def dashboard(u:User=Depends(current_user),s:Session=Depends(db)):
     docs=s.scalars(select(Document).where(Document.user_id==u.id)).all()

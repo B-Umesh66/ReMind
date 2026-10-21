@@ -1,9 +1,16 @@
 import { Component, ReactNode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BookOpen, BrainCircuit, ChartNoAxesCombined, ChevronRight, Clock3, FileUp, Grid2X2, Library, Menu, Moon, MoreHorizontal, Plus, RotateCw, Settings, Sparkles, Sun, Target, X } from 'lucide-react'
+import { AlertCircle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, User, X } from 'lucide-react'
 import './styles.css'
 
 const API = '/api/v1'
+type UserProfile = {
+  id: number
+  email: string
+  display_name?: string
+  workspace_name?: string
+  created_at?: string | null
+}
 type LearningSignals = {
   total_attempts: number
   correct_attempts: number
@@ -35,6 +42,7 @@ function applyScale(scale: FontScale) { document.documentElement.setAttribute('d
 
 function App() {
   const [token, setToken] = useState(localStorage.remindToken || '')
+  const [user, setUser] = useState<UserProfile | null>(null)
   const [data, setData] = useState<Dashboard>(demo)
   const [tab, setTab] = useState('Overview')
   const [drawer, setDrawer] = useState(false)
@@ -42,9 +50,13 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null)
   const [selectedConceptId, setSelectedConceptId] = useState<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [profileModalOpen, setProfileModalOpen] = useState(false)
+  const [profileModalTab, setProfileModalTab] = useState<'profile' | 'workspace' | 'stats' | 'security'>('profile')
   const [theme, setTheme] = useState<'light' | 'dark'>((localStorage.remindTheme || 'light') as 'light' | 'dark')
   const [fscale, setFscale] = useState<FontScale>((localStorage.remindScale || 'md') as FontScale)
   const file = useRef<HTMLInputElement>(null)
+  const workspaceRef = useRef<HTMLDivElement>(null)
 
   // Apply theme + scale on mount and change
   useEffect(() => { applyTheme(theme); localStorage.remindTheme = theme }, [theme])
@@ -62,7 +74,38 @@ function App() {
     } catch { }
   }
 
-  useEffect(() => { load() }, [token])
+  const loadUser = async () => {
+    if (!token) return
+    try {
+      const r = await fetch(API + '/auth/me', { headers: headers() })
+      if (r.ok) setUser(await r.json())
+    } catch { }
+  }
+
+  useEffect(() => {
+    load()
+    loadUser()
+  }, [token])
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (workspaceRef.current && !workspaceRef.current.contains(e.target as Node)) {
+        setProfileMenuOpen(false)
+      }
+    }
+    if (profileMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [profileMenuOpen])
+
+  const handleSignOut = () => {
+    localStorage.removeItem('remindToken')
+    setToken('')
+    setUser(null)
+    setProfileMenuOpen(false)
+    setProfileModalOpen(false)
+  }
 
   const rebuild = async () => {
     if (!token || rebuilding) return
@@ -96,6 +139,7 @@ function App() {
     if (!r.ok) throw new Error(body.detail || 'Could not sign in.')
     localStorage.remindToken = body.access_token
     setToken(body.access_token)
+    if (body.user) setUser(body.user)
   }
 
   const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,10 +166,78 @@ function App() {
     <div className="app">
       <aside className={drawer ? 'open' : ''}>
         <div className="brand"><span>r</span> ReMind</div>
-        <div className="workspace">
-          <span className="avatar">U</span>
-          <div><b>Your workspace</b><small>Personal learning</small></div>
-          <MoreHorizontal size={17} />
+        <div className="workspace-container" ref={workspaceRef}>
+          <button
+            className={`workspace ${profileMenuOpen ? 'active' : ''}`}
+            onClick={() => setProfileMenuOpen(o => !o)}
+            aria-expanded={profileMenuOpen}
+            aria-haspopup="true"
+            title="User Profile & Personal Workspace Options"
+          >
+            <span className="avatar">
+              {user?.display_name ? user.display_name[0].toUpperCase() : (user?.email ? user.email[0].toUpperCase() : 'U')}
+            </span>
+            <div className="workspace-info">
+              <b className="workspace-title">{user?.workspace_name || 'Your workspace'}</b>
+              <small>{user?.display_name || user?.email?.split('@')[0] || 'Personal learning'}</small>
+            </div>
+            <MoreHorizontal size={17} />
+          </button>
+
+          {profileMenuOpen && (
+            <div className="workspace-dropdown" role="menu">
+              <div className="workspace-dropdown-header">
+                <div className="workspace-dropdown-user">{user?.display_name || user?.email?.split('@')[0] || 'User Profile'}</div>
+                <div className="workspace-dropdown-email">{user?.email || 'Local user'}</div>
+                <div className="workspace-dropdown-badge">{user?.workspace_name || 'Personal Workspace'}</div>
+              </div>
+              <div className="workspace-dropdown-menu">
+                <button
+                  className="workspace-dropdown-item"
+                  onClick={() => { setProfileModalTab('profile'); setProfileModalOpen(true); setProfileMenuOpen(false); }}
+                >
+                  <User size={15} />
+                  Profile & Account
+                </button>
+                <button
+                  className="workspace-dropdown-item"
+                  onClick={() => { setProfileModalTab('workspace'); setProfileModalOpen(true); setProfileMenuOpen(false); }}
+                >
+                  <HardDrive size={15} />
+                  Workspace Settings
+                </button>
+                <button
+                  className="workspace-dropdown-item"
+                  onClick={() => { setProfileModalTab('stats'); setProfileModalOpen(true); setProfileMenuOpen(false); }}
+                >
+                  <ChartNoAxesCombined size={15} />
+                  Learning Stats
+                </button>
+                <button
+                  className="workspace-dropdown-item"
+                  onClick={() => { setProfileModalTab('security'); setProfileModalOpen(true); setProfileMenuOpen(false); }}
+                >
+                  <Lock size={15} />
+                  Security & Password
+                </button>
+                <div className="workspace-dropdown-divider" />
+                <button
+                  className="workspace-dropdown-item"
+                  onClick={() => { setSettingsOpen(o => !o); setProfileMenuOpen(false); }}
+                >
+                  <Settings size={15} />
+                  Appearance
+                </button>
+                <button
+                  className="workspace-dropdown-item danger"
+                  onClick={handleSignOut}
+                >
+                  <X size={15} />
+                  Sign out
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <nav>
           {nav.map((n, i) => {
@@ -144,7 +256,7 @@ function App() {
             <Settings size={16} />
             Appearance
           </button>
-          <button onClick={() => { localStorage.removeItem('remindToken'); setToken('') }}>Sign out</button>
+          <button onClick={handleSignOut}>Sign out</button>
         </div>
 
         {settingsOpen && (
@@ -182,7 +294,19 @@ function App() {
             <p className="eyebrow">LOCAL-FIRST LEARNING</p>
             <h2>{tab === 'Overview' ? 'A gentler way to keep up.' : tab}</h2>
           </div>
-          <button className="upload" onClick={() => file.current?.click()}><Plus size={17} />Add material</button>
+          <div className="header-actions">
+            <button
+              className="user-profile-btn"
+              onClick={() => { setProfileModalTab('profile'); setProfileModalOpen(true); }}
+              title="Open User Profile & Personal Workspace"
+            >
+              <span className="avatar-sm">
+                {user?.display_name ? user.display_name[0].toUpperCase() : (user?.email ? user.email[0].toUpperCase() : 'U')}
+              </span>
+              <span className="user-profile-name">{user?.display_name || user?.email?.split('@')[0] || 'Profile'}</span>
+            </button>
+            <button className="upload" onClick={() => file.current?.click()}><Plus size={17} />Add material</button>
+          </div>
           <input ref={file} onChange={upload} type="file" accept=".pdf,.docx,.txt,.md" hidden />
         </header>
 
@@ -209,6 +333,441 @@ function App() {
           <Empty tab={tab} upload={() => file.current?.click()} />
         )}
       </main>
+
+      <ProfileModal
+        isOpen={profileModalOpen}
+        onClose={() => setProfileModalOpen(false)}
+        user={user}
+        token={token}
+        headers={headers}
+        onUserUpdate={u => setUser(u)}
+        initialTab={profileModalTab}
+        dashboardData={data}
+        onSignOut={handleSignOut}
+        onNavigateTab={t => { setTab(t); setDrawer(false); }}
+      />
+    </div>
+  )
+}
+
+function ProfileModal({
+  isOpen,
+  onClose,
+  user,
+  token: _token,
+  headers,
+  onUserUpdate,
+  initialTab = 'profile',
+  dashboardData,
+  onSignOut,
+  onNavigateTab,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  user: UserProfile | null
+  token: string
+  headers: () => Record<string, string>
+  onUserUpdate: (u: UserProfile) => void
+  initialTab?: 'profile' | 'workspace' | 'stats' | 'security'
+  dashboardData: Dashboard
+  onSignOut: () => void
+  onNavigateTab: (tab: string) => void
+}) {
+  const [tab, setTab] = useState<'profile' | 'workspace' | 'stats' | 'security'>(initialTab)
+  const [displayName, setDisplayName] = useState(user?.display_name || '')
+  const [workspaceName, setWorkspaceName] = useState(user?.workspace_name || 'Personal Workspace')
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileNotice, setProfileNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [passwordNotice, setPasswordNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [health, setHealth] = useState<any>(null)
+
+  useEffect(() => {
+    setTab(initialTab)
+  }, [initialTab, isOpen])
+
+  useEffect(() => {
+    if (user) {
+      setDisplayName(user.display_name || '')
+      setWorkspaceName(user.workspace_name || 'Personal Workspace')
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (isOpen) {
+      fetch(API + '/health')
+        .then(r => r.json())
+        .then(setHealth)
+        .catch(() => {})
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    if (isOpen) {
+      window.addEventListener('keydown', handleKeyDown)
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isOpen, onClose])
+
+  if (!isOpen) return null
+
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setProfileSaving(true)
+    setProfileNotice(null)
+    try {
+      const r = await fetch(API + '/auth/profile', {
+        method: 'PUT',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: displayName, workspace_name: workspaceName }),
+      })
+      const data = await r.json()
+      if (r.ok) {
+        onUserUpdate(data)
+        setProfileNotice({ type: 'success', text: 'Profile and workspace updated successfully.' })
+        setTimeout(() => setProfileNotice(null), 3500)
+      } else {
+        setProfileNotice({ type: 'error', text: data.detail || 'Could not update profile.' })
+      }
+    } catch {
+      setProfileNotice({ type: 'error', text: 'Network error connecting to backend.' })
+    } finally {
+      setProfileSaving(false)
+    }
+  }
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPasswordNotice(null)
+    if (newPassword.length < 8) {
+      setPasswordNotice({ type: 'error', text: 'New password must be at least 8 characters long.' })
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordNotice({ type: 'error', text: 'New passwords do not match.' })
+      return
+    }
+    setPasswordSaving(true)
+    try {
+      const r = await fetch(API + '/auth/change-password', {
+        method: 'POST',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      })
+      const data = await r.json()
+      if (r.ok) {
+        setCurrentPassword('')
+        setNewPassword('')
+        setConfirmPassword('')
+        setPasswordNotice({ type: 'success', text: data.message || 'Password changed successfully.' })
+        setTimeout(() => setPasswordNotice(null), 4000)
+      } else {
+        setPasswordNotice({ type: 'error', text: data.detail || 'Password change failed.' })
+      }
+    } catch {
+      setPasswordNotice({ type: 'error', text: 'Network error connecting to backend.' })
+    } finally {
+      setPasswordSaving(false)
+    }
+  }
+
+  const userInitial = displayName ? displayName[0].toUpperCase() : (user?.email ? user.email[0].toUpperCase() : 'U')
+  const memberDate = user?.created_at ? new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) : 'Local installation'
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} role="dialog" aria-modal="true">
+      <div className="profile-modal" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="profile-modal-header">
+          <div className="profile-modal-user">
+            <span className="avatar-lg">{userInitial}</span>
+            <div>
+              <h3>{displayName || user?.email?.split('@')[0] || 'User Profile'}</h3>
+              <p>{user?.email} · {workspaceName || 'Personal Workspace'}</p>
+            </div>
+          </div>
+          <button className="profile-modal-close" onClick={onClose} aria-label="Close dialog">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Navigation Tabs */}
+        <div className="profile-modal-nav">
+          <button
+            className={`profile-modal-tab ${tab === 'profile' ? 'active' : ''}`}
+            onClick={() => setTab('profile')}
+          >
+            <User size={16} />
+            Profile & Account
+          </button>
+          <button
+            className={`profile-modal-tab ${tab === 'workspace' ? 'active' : ''}`}
+            onClick={() => setTab('workspace')}
+          >
+            <HardDrive size={16} />
+            My Workspace
+          </button>
+          <button
+            className={`profile-modal-tab ${tab === 'stats' ? 'active' : ''}`}
+            onClick={() => setTab('stats')}
+          >
+            <ChartNoAxesCombined size={16} />
+            Learning Stats
+          </button>
+          <button
+            className={`profile-modal-tab ${tab === 'security' ? 'active' : ''}`}
+            onClick={() => setTab('security')}
+          >
+            <Lock size={16} />
+            Security
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="profile-modal-body">
+          {tab === 'profile' && (
+            <form onSubmit={handleSaveProfile} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {profileNotice && (
+                <div className={`profile-alert ${profileNotice.type}`}>
+                  {profileNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                  {profileNotice.text}
+                </div>
+              )}
+
+              <div className="profile-field-group">
+                <label>Display Name</label>
+                <input
+                  type="text"
+                  value={displayName}
+                  onChange={e => setDisplayName(e.target.value)}
+                  placeholder="e.g. Umesh B or Learner"
+                  maxLength={120}
+                />
+              </div>
+
+              <div className="profile-field-group">
+                <label>Email Address</label>
+                <input type="email" value={user?.email || ''} disabled />
+                <small style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+                  Email address is verified for this local account session.
+                </small>
+              </div>
+
+              <div className="info-card">
+                <div className="info-card-header">
+                  <h4><Shield size={16} style={{ color: '#92e078' }} /> Account Details & Privacy</h4>
+                  <span className="badge recommended">Local-First</span>
+                </div>
+                <p>
+                  <strong>Account ID:</strong> #{user?.id || 1} &nbsp;·&nbsp;
+                  <strong>Member Since:</strong> {memberDate}
+                </p>
+                <p style={{ marginTop: 6 }}>
+                  All your uploaded notes, extracted knowledge graph nodes, and assessment records remain 100% private to your local environment.
+                </p>
+              </div>
+
+              <button type="submit" className="dark-btn" style={{ alignSelf: 'flex-start', marginTop: 4 }} disabled={profileSaving}>
+                {profileSaving ? 'Saving changes…' : 'Save Profile Changes'}
+              </button>
+            </form>
+          )}
+
+          {tab === 'workspace' && (
+            <form onSubmit={handleSaveProfile} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {profileNotice && (
+                <div className={`profile-alert ${profileNotice.type}`}>
+                  {profileNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                  {profileNotice.text}
+                </div>
+              )}
+
+              <div className="profile-field-group">
+                <label>Workspace Name</label>
+                <input
+                  type="text"
+                  value={workspaceName}
+                  onChange={e => setWorkspaceName(e.target.value)}
+                  placeholder="e.g. Personal learning or Neuroscience Lab"
+                  maxLength={120}
+                />
+                <small style={{ color: 'var(--text-muted)', fontSize: 'var(--fs-xs)' }}>
+                  This label appears at the top of your sidebar dashboard.
+                </small>
+              </div>
+
+              <div className="profile-stats-grid">
+                <div className="profile-stat-box">
+                  <span>Documents Ingested</span>
+                  <strong>{dashboardData.documents}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>{dashboardData.processed_documents} processed & indexed</small>
+                </div>
+                <div className="profile-stat-box">
+                  <span>Concepts Mapped</span>
+                  <strong>{dashboardData.concepts}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>{dashboardData.assessed_concepts} assessed</small>
+                </div>
+              </div>
+
+              <div className="info-card">
+                <div className="info-card-header">
+                  <h4><BrainCircuit size={16} style={{ color: '#92c974' }} /> Local AI Provider (Ollama)</h4>
+                  <span className={`badge ${health?.ollama_available ? 'recommended' : 'snoozed'}`}>
+                    {health?.ollama_available ? 'Online' : 'Offline'}
+                  </span>
+                </div>
+                <p>
+                  <strong>LLM:</strong> {health?.models?.llm || 'qwen3:4b'} &nbsp;·&nbsp;
+                  <strong>Embeddings:</strong> {health?.models?.embedding || 'qwen3-embedding:0.6b'}
+                </p>
+                <p style={{ marginTop: 4 }}>
+                  <strong>Database:</strong> {health?.database || 'SQLite development database'}
+                </p>
+              </div>
+
+              <button type="submit" className="dark-btn" style={{ alignSelf: 'flex-start', marginTop: 4 }} disabled={profileSaving}>
+                {profileSaving ? 'Saving workspace…' : 'Update Workspace'}
+              </button>
+            </form>
+          )}
+
+          {tab === 'stats' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div className="profile-stats-grid">
+                <div className="profile-stat-box">
+                  <span>Total Assessment Attempts</span>
+                  <strong>{dashboardData.signals?.total_attempts ?? 0}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>{dashboardData.signals?.correct_attempts ?? 0} successful recalls</small>
+                </div>
+                <div className="profile-stat-box">
+                  <span>Overall Accuracy</span>
+                  <strong>{dashboardData.signals?.accuracy !== null && dashboardData.signals?.accuracy !== undefined ? `${dashboardData.signals.accuracy}%` : 'N/A'}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>Based on recorded tests</small>
+                </div>
+                <div className="profile-stat-box">
+                  <span>Retention Rate</span>
+                  <strong>{dashboardData.signals?.retention_rate !== null && dashboardData.signals?.retention_rate !== undefined ? `${dashboardData.signals.retention_rate}%` : 'N/A'}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>Calculated decay status</small>
+                </div>
+                <div className="profile-stat-box">
+                  <span>Concepts At Risk</span>
+                  <strong style={{ color: dashboardData.at_risk > 0 ? '#e08a50' : 'var(--text-primary)' }}>{dashboardData.at_risk}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>Need revision soon</small>
+                </div>
+              </div>
+
+              <div className="info-card">
+                <div className="info-card-header">
+                  <h4><Target size={16} style={{ color: '#92c974' }} /> Continuous Knowledge Maintenance</h4>
+                  <span className="badge recommended">{dashboardData.recommendations.length} Pending</span>
+                </div>
+                <p>
+                  ReMind uses deterministic spacing and decay tracking to prompt you right before memories fade.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button
+                    className="dark-btn"
+                    style={{ fontSize: 'var(--fs-xs)', padding: '7px 12px' }}
+                    onClick={() => { onNavigateTab('Analytics'); onClose(); }}
+                  >
+                    View Full Analytics
+                  </button>
+                  <button
+                    className="light-btn"
+                    style={{ fontSize: 'var(--fs-xs)', padding: '7px 12px' }}
+                    onClick={() => { onNavigateTab('Revision Center'); onClose(); }}
+                  >
+                    Open Revision Center
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === 'security' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              <form onSubmit={handleChangePassword} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <p className="eyebrow" style={{ margin: 0 }}>SECURITY SETTINGS</p>
+                <h4 style={{ margin: 0, fontSize: 'var(--fs-md)', color: 'var(--text-primary)' }}>Change Password</h4>
+
+                {passwordNotice && (
+                  <div className={`profile-alert ${passwordNotice.type}`}>
+                    {passwordNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                    {passwordNotice.text}
+                  </div>
+                )}
+
+                <div className="profile-field-group">
+                  <label>Current Password</label>
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={e => setCurrentPassword(e.target.value)}
+                    placeholder="Enter current password"
+                    required
+                  />
+                </div>
+
+                <div className="profile-field-group">
+                  <label>New Password</label>
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="At least 8 characters"
+                    minLength={8}
+                    required
+                  />
+                </div>
+
+                <div className="profile-field-group">
+                  <label>Confirm New Password</label>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new password"
+                    minLength={8}
+                    required
+                  />
+                </div>
+
+                <button type="submit" className="dark-btn" style={{ alignSelf: 'flex-start' }} disabled={passwordSaving}>
+                  {passwordSaving ? 'Updating password…' : 'Update Password'}
+                </button>
+              </form>
+
+              <div className="workspace-dropdown-divider" />
+
+              <div className="info-card" style={{ borderColor: 'rgba(255,100,100,0.2)' }}>
+                <div className="info-card-header">
+                  <h4 style={{ color: '#d9534f' }}>Session Management</h4>
+                </div>
+                <p>Sign out of your active session on this device. Your data remains safely stored in your local workspace.</p>
+                <button
+                  type="button"
+                  className="light-btn"
+                  style={{ marginTop: 12, color: '#c9302c', borderColor: '#f5c6cb' }}
+                  onClick={onSignOut}
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="profile-modal-footer">
+          <button className="light-btn" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   )
 }
