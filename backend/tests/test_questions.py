@@ -97,6 +97,9 @@ def test_assessment_replenishes_candidates_until_requested_count(monkeypatch):
     body = response.json()
     assert body["generated_count"] == 20
     assert body["partial"] is False
+    assert body["generation_duration_ms"] >= 0
+    assert body["persistence_duration_ms"] >= 0
+    assert calls == 2
     detail = client.get(f"/api/v1/assessments/{body['id']}", headers=headers)
     assert detail.status_code == 200
     prompts = [question["prompt"] for question in detail.json()["questions"]]

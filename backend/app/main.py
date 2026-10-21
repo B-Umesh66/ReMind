@@ -1,6 +1,6 @@
 """ReMind API: a local-first adaptive learning service."""
 from __future__ import annotations
-import json, logging, os, re, math
+import json, logging, os, re, math, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Any
@@ -518,6 +518,7 @@ async def ask(body:AskRequest,u:User=Depends(current_user),s:Session=Depends(db)
     return {'answer':answer,'citations':[{'chunk_id':c.id,'document':d.name,'page':c.page,'excerpt':c.content[:280]} for _,c,d in ranked]}
 @app.post('/api/v1/assessments')
 async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s:Session=Depends(db)):
+    generation_started=time.perf_counter()
     c=owned_concept(s,u,body.concept_id); chunks=s.scalars(select(Chunk).join(Document).where(Document.user_id==u.id).order_by(Chunk.id).limit(8)).all()
     if not chunks: raise HTTPException(422,'Upload material before creating an assessment.')
     selected_types=', '.join(body.question_types)
@@ -549,11 +550,15 @@ async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s
         remaining=body.question_count-len(valid)
         if remaining <= 0: break
         attempts += 1
-        candidate_count=min(12, max(remaining + 3, 8))
+        # A full first batch avoids paying model load/decode overhead three
+        # times for the common 20-question request. Replenishment stays small.
+        batch_limit=body.question_count if not valid else 12
+        candidate_count=min(batch_limit, max(remaining + 2, 8))
         excluded='\n'.join(f'- {prompt}' for prompt in reversed(previous_prompts[-8:]))
         objective = objective_sets[attempt % len(objective_sets)]
-        ordered_chunks=chunks[attempt % len(chunks):] + chunks[:attempt % len(chunks)]
-        attempt_sources='\n\n'.join(f'[{i}] {chunk.content[:550]}' for i,chunk in enumerate(ordered_chunks))
+        offset=attempt % len(chunks)
+        ordered_indices=[(offset + i) % len(chunks) for i in range(min(4, len(chunks)))]
+        attempt_sources='\n\n'.join(f'[{i}] {chunks[i].content[:550]}' for i in ordered_indices)
         prompt=(f"Create up to {candidate_count} candidate {body.difficulty} learning questions about '{c.name}', only from the passages. "
           f"Every question must be one of these kinds: {selected_types}. Do not invent facts. "
           "Do not repeat, paraphrase, or lightly reword any excluded question. "
@@ -601,20 +606,30 @@ async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s
             f'Only {len(valid)} unique questions could be generated from the available material; '
             'no usable assessment could be created. Please add more material or retry.'
         )
+    persistence_started=time.perf_counter()
     a=Assessment(user_id=u.id,title=f'{c.name} recall check');s.add(a);s.flush()
     for item in valid:
         s.add(Question(assessment_id=a.id,concept_id=c.id,kind=item.kind,prompt=item.prompt,options_json=json.dumps(item.options),answer=item.answer,explanation=item.explanation,source_chunk_id=chunks[item.source_index].id))
     s.commit()
+    persistence_ms=(time.perf_counter()-persistence_started)*1000
     questions=s.scalars(select(Question).where(Question.assessment_id==a.id).order_by(Question.id)).all()
     generated_count=len(questions)
     message=None if generated_count == body.question_count else (
         f'Generated {generated_count} unique questions instead of {body.question_count}; '
         'the available material did not support more sufficiently distinct questions.'
     )
+    total_ms=(time.perf_counter()-generation_started)*1000
+    logger.info(
+        'assessment_generation_complete user=%s concept=%s requested=%s generated=%s '
+        'attempts=%s total_duration_ms=%.1f persistence_duration_ms=%.1f',
+        u.id, c.id, body.question_count, generated_count, attempts, total_ms, persistence_ms
+    )
     return {
         'id':a.id,'title':a.title,'status':a.status,
         'requested_count':body.question_count,'generated_count':generated_count,
         'partial':generated_count < body.question_count,'message':message,
+        'generation_duration_ms':round(total_ms, 1),
+        'persistence_duration_ms':round(persistence_ms, 1),
         'questions':[{'id':q.id,'prompt':q.prompt,'kind':q.kind} for q in questions]
     }
 @app.get('/api/v1/assessments/{assessment_id}')

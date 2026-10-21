@@ -1,11 +1,12 @@
 """Centralised, bounded Ollama integration. No cloud fallback is ever used."""
-import asyncio, json, os, re
+import asyncio, json, logging, os, re, time
 from typing import Any, TypeVar
 import httpx
 from pydantic import BaseModel, ValidationError
 
 class AIUnavailable(RuntimeError): pass
 class InvalidAIResponse(RuntimeError): pass
+logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
 
 class OllamaProvider:
@@ -21,6 +22,7 @@ class OllamaProvider:
             return [x.get('name','') for x in r.json().get('models',[])]
         except httpx.HTTPError as e: raise AIUnavailable('Ollama is unavailable. Start Ollama and pull the configured models.') from e
     async def embed(self, text:str)->list[float]:
+        started=time.perf_counter()
         async with self.limit:
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as c:
@@ -31,9 +33,14 @@ class OllamaProvider:
                     body=r.json()
                 values=body.get('embeddings');
                 if not isinstance(values,list) or not values or not isinstance(values[0],list): raise InvalidAIResponse('Embedding model returned no embeddings.')
+                logger.info(
+                    'ollama_request kind=embed model=%s duration_ms=%.1f input_chars=%s output_dims=%s',
+                    self.embedding, (time.perf_counter()-started)*1000, len(text), len(values[0])
+                )
                 return values[0]
             except httpx.HTTPError as e: raise AIUnavailable('Embedding request failed. Verify Ollama and the embedding model.') from e
     async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None)->str:
+        started=time.perf_counter()
         async with self.limit:
             try:
                 # Assessment batches can contain several options and explanations.
@@ -48,6 +55,13 @@ class OllamaProvider:
                     body=r.json()
                 answer=body.get('response')
                 if not isinstance(answer,str) or not answer.strip(): raise InvalidAIResponse('Language model returned an empty response.')
+                logger.info(
+                    'ollama_request kind=generate model=%s duration_ms=%.1f prompt_chars=%s '
+                    'response_chars=%s eval_duration_ms=%s prompt_eval_duration_ms=%s',
+                    self.llm, (time.perf_counter()-started)*1000, len(prompt), len(answer),
+                    round(body.get('eval_duration', 0)/1_000_000, 1) if body.get('eval_duration') else None,
+                    round(body.get('prompt_eval_duration', 0)/1_000_000, 1) if body.get('prompt_eval_duration') else None
+                )
                 return answer.strip()
             except httpx.HTTPError as e: raise AIUnavailable('Generation request failed. Verify Ollama and the configured language model.') from e
     async def structured(self, prompt:str, schema:type[T])->T:
