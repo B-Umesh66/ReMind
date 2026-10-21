@@ -35,7 +35,7 @@
 
 - Centralized Ollama provider with configurable base URL, model names, timeouts, retry-related configuration, and concurrency limited to one task by default.
 - Qwen3 Embedding 0.6B produces one embedding per chunk during indexing.
-- Qwen3 4B is used for structured concept extraction, relationship extraction, source-grounded assessment generation, short-answer rubric feedback, and RAG answer generation.
+- Qwen3 4B is used for structured concept extraction, relationship extraction, source-grounded assessment generation, and RAG answer generation.
 - Pydantic validates structured model output before it is persisted.
 - Qwen thinking preambles are stripped before JSON parsing.
 - Clear failures for unavailable Ollama, malformed output, and insufficient evidence; no paid model or silent fake-AI fallback.
@@ -61,7 +61,7 @@
 
 ### Assessments, decay, and revisions
 
-- Qwen-generated source-grounded multiple-choice, true/false, and short-answer questions.
+- Qwen-generated source-grounded assessments contain 5–20 user-selected multiple-choice and/or true/false questions.
 - Objective questions use deterministic grading.
 - Short answers use Qwen rubric grading with validated score and feedback.
 - Every response is persisted as an assessment attempt and updates the associated concept profile.

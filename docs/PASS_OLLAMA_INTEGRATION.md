@@ -5,7 +5,7 @@
 This pass connects ReMind's local-AI workflows to the installed Ollama model configuration:
 
 - `qwen3-embedding:0.6b` creates one embedding per document chunk during indexing. A document only becomes `indexed` after all embeddings are stored; if Ollama is offline it remains `processed` and can be retried from **My Library**.
-- `qwen3:4b` produces schema-validated, source-grounded concept extraction, graph relationships, assessments, and short-answer rubric evaluations.
+- `qwen3:4b` produces schema-validated, source-grounded concept extraction, graph relationships, and assessments containing 5–20 user-selected multiple-choice and/or true/false questions.
 - RAG uses the embedding model to rank only the signed-in user's persisted chunks; Qwen answers with the selected passages and real citations.
 - Model output is parsed as JSON, stripped of optional Qwen thinking text, then validated with Pydantic before it can create database records.
 - The single semaphore controlled by `AI_CONCURRENCY_LIMIT` defaults to `1`, so the two models are not driven concurrently by the application.

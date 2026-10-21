@@ -1,6 +1,6 @@
 import { Component, ReactNode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AlertCircle, AlertTriangle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, Trash2, User, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronDown, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, Trash2, User, X } from 'lucide-react'
 import './styles.css'
 
 const API = '/api/v1'
@@ -12,11 +12,12 @@ type UserProfile = {
   created_at?: string | null
 }
 type LearningSignals = {
-  total_attempts: number
-  correct_attempts: number
+  total_assessments: number
+  correct_answers: number
+  total_questions: number
   accuracy: number | null
   retention_rate: number | null
-  recent: { score: number; height: number; correct: boolean; date: string }[]
+  recent: { score: number; max_score: number; height: number; correct: boolean; date: string }[]
 }
 
 type Dashboard = {
@@ -32,10 +33,17 @@ const demo: Dashboard = { documents: 0, processed_documents: 0, concepts: 0, ass
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: boolean }> {
   state = { error: false }; static getDerivedStateFromError() { return { error: true } }
-  render() { return this.state.error ? <main className="gate"><div className="logo"><span>r</span> ReMind</div><h1>Something prevented<br /><i>the interface from loading.</i></h1><p className="lead">Please refresh this page. If it persists, start the frontend with <code>npm run dev</code> from the frontend folder.</p></main> : this.props.children }
+  render() { return this.state.error ? <main className="gate"><div className="logo"><span><i>r</i></span> ReMind</div><h1>Something prevented<br /><i>the interface from loading.</i></h1><p className="lead">Please refresh this page. If it persists, start the frontend with <code>npm run dev</code> from the frontend folder.</p></main> : this.props.children }
 }
 
 type FontScale = 'sm' | 'md' | 'lg' | 'xl'
+type AppAlertState = {
+  title: string
+  message: string
+  tone: 'confirm' | 'success' | 'error' | 'info'
+  confirmLabel?: string
+  onConfirm?: () => void
+}
 
 function applyTheme(theme: 'light' | 'dark') { document.documentElement.setAttribute('data-theme', theme) }
 function applyScale(scale: FontScale) { document.documentElement.setAttribute('data-fscale', scale) }
@@ -46,17 +54,21 @@ function App() {
   const [data, setData] = useState<Dashboard>(demo)
   const [tab, setTab] = useState('Overview')
   const [drawer, setDrawer] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [appAlert, setAppAlert] = useState<AppAlertState | null>(null)
   const [selectedConceptId, setSelectedConceptId] = useState<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [profileModalTab, setProfileModalTab] = useState<'profile' | 'workspace' | 'stats' | 'security'>('profile')
+  const [documentsRefreshKey, setDocumentsRefreshKey] = useState(0)
   const [theme, setTheme] = useState<'light' | 'dark'>((localStorage.remindTheme || 'light') as 'light' | 'dark')
   const [fscale, setFscale] = useState<FontScale>((localStorage.remindScale || 'md') as FontScale)
   const file = useRef<HTMLInputElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
+  const settingsRef = useRef<HTMLDivElement>(null)
 
   // Apply theme + scale on mount and change
   useEffect(() => { applyTheme(theme); localStorage.remindTheme = theme }, [theme])
@@ -99,6 +111,18 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [profileMenuOpen])
 
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setSettingsOpen(false)
+      }
+    }
+    if (settingsOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [settingsOpen])
+
   const handleSignOut = () => {
     localStorage.removeItem('remindToken')
     setToken('')
@@ -119,10 +143,10 @@ function App() {
         setTimeout(() => setNotice(null), 4500)
       } else {
         const err = await r.json().catch(() => ({}))
-        alert(err.detail || 'Could not refresh recommendations.')
+        setAppAlert({ title: 'Refresh unavailable', message: err.detail || 'Could not refresh recommendations.', tone: 'error' })
       }
     } catch {
-      alert('Could not connect to backend server.')
+      setAppAlert({ title: 'Connection problem', message: 'Could not connect to backend server.', tone: 'error' })
     } finally {
       setRebuilding(false)
     }
@@ -149,23 +173,62 @@ function App() {
     form.append('file', f)
     let r = await fetch(API + '/documents', { method: 'POST', headers: headers(), body: form })
     if (r.ok) {
+      const result = await r.json()
+      setDocumentsRefreshKey(key => key + 1)
       await load()
-      alert('Document processed and indexed.')
-      await rebuild()
-    } else alert((await r.json()).detail || 'Upload failed')
+      e.target.value = ''
+      setAppAlert({
+        title: 'Study material uploaded',
+        message: `"${f.name}" is ready. Would you like ReMind to extract concepts from it now?`,
+        tone: 'confirm',
+        confirmLabel: 'Extract concepts',
+        onConfirm: () => {
+          setAppAlert({ title: 'Extracting concepts', message: 'ReMind is reading your material and building its knowledge map…', tone: 'info' })
+          fetch(`${API}/documents/${result.id}/extract-concepts`, { method: 'POST', headers: headers() })
+            .then(async extraction => {
+              const extractionResult = await extraction.json()
+              if (!extraction.ok) throw new Error(extractionResult.detail || 'Concept extraction failed. You can try again from My Library.')
+              setAppAlert({
+                title: 'Extraction complete',
+                message: `Added ${extractionResult.concepts_added || 0} concepts to your knowledge map.`,
+                tone: 'success'
+              })
+              await load()
+              await rebuild()
+            })
+            .catch(error => setAppAlert({
+              title: 'Extraction could not be completed',
+              message: error instanceof Error ? error.message : 'Could not connect to the server. You can try again from My Library.',
+              tone: 'error'
+            }))
+        }
+      })
+    } else {
+      const error = await r.json().catch(() => ({}))
+      setAppAlert({ title: 'Upload failed', message: error.detail || 'The file could not be uploaded.', tone: 'error' })
+      e.target.value = ''
+    }
   }
 
   const nav = ['Overview', 'My Library', 'Knowledge Map', 'Assessments', 'Revision Center', 'Analytics']
   if (!token) return <LoginPage authenticate={authenticate} />
-  const shared = { token, headers, refresh: load }
+  const shared = { token, headers, refresh: load, documentsRefreshKey }
 
   const scaleLabels: FontScale[] = ['sm', 'md', 'lg', 'xl']
   const scaleFull: { [k in FontScale]: string } = { sm: 'Small', md: 'Default', lg: 'Large', xl: 'X-Large' }
 
   return (
-    <div className="app">
-      <aside className={drawer ? 'open' : ''}>
-        <div className="brand"><span>r</span> ReMind</div>
+    <div className={`app${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+      <aside className={`${drawer ? 'open ' : ''}${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div className="brand"><span><i>r</i></span><b>ReMind</b></div>
+        <button
+          className="sidebar-toggle"
+          onClick={() => setSidebarCollapsed(collapsed => !collapsed)}
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+        </button>
         <div className="workspace-container" ref={workspaceRef}>
           <button
             className={`workspace ${profileMenuOpen ? 'active' : ''}`}
@@ -252,22 +315,18 @@ function App() {
             return (
               <button key={n} className={tab === n ? 'selected' : ''} onClick={() => { setTab(n); setDrawer(false); setSettingsOpen(false) }}>
                 <I size={18} />
-                {n}
+                <span>{n}</span>
                 {n === 'Revision Center' && data.recommendations.length > 0 ? <em>{data.recommendations.length}</em> : null}
               </button>
             )
           })}
         </nav>
         <div className="side-foot">
-          <button className={`settings-gear${settingsOpen ? ' open' : ''}`} onClick={() => setSettingsOpen(o => !o)}>
-            <Settings size={16} />
-            Appearance
-          </button>
           <button onClick={handleSignOut}>Sign out</button>
         </div>
 
         {settingsOpen && (
-          <div className="settings-panel">
+          <div className="settings-panel" ref={settingsRef}>
             {/* Theme toggle */}
             <p className="label">Theme</p>
             <div className="settings-row" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
@@ -279,16 +338,23 @@ function App() {
             </div>
 
             {/* Font size */}
-            <p className="label" style={{ marginTop: 12 }}>Font size</p>
-            <div className="settings-row">
-              {scaleLabels.map(s => (
-                <button
-                  key={s}
-                  className={`settings-btn${fscale === s ? ' active' : ''}`}
-                  onClick={() => setFscale(s)}
-                  title={scaleFull[s]}
-                >{scaleFull[s]}</button>
-              ))}
+            <div className="font-size-heading">
+              <p className="label">Font size</p>
+              <span>{scaleFull[fscale]}</span>
+            </div>
+            <div className="font-size-slider">
+              <span className="font-size-mark small">A</span>
+              <input
+                type="range"
+                min={0}
+                max={scaleLabels.length - 1}
+                step={1}
+                value={scaleLabels.indexOf(fscale)}
+                onChange={e => setFscale(scaleLabels[Number(e.target.value)])}
+                aria-label="Font size"
+                aria-valuetext={scaleFull[fscale]}
+              />
+              <span className="font-size-mark large">A</span>
             </div>
           </div>
         )}
@@ -302,16 +368,6 @@ function App() {
             <h2>{tab === 'Overview' ? 'A gentler way to keep up.' : tab}</h2>
           </div>
           <div className="header-actions">
-            <button
-              className="user-profile-btn"
-              onClick={() => { setProfileModalTab('profile'); setProfileModalOpen(true); }}
-              title="Open User Profile & Personal Workspace"
-            >
-              <span className="avatar-sm">
-                {user?.display_name ? user.display_name[0].toUpperCase() : (user?.email ? user.email[0].toUpperCase() : 'U')}
-              </span>
-              <span className="user-profile-name">{user?.display_name || user?.email?.split('@')[0] || 'Profile'}</span>
-            </button>
             <button className="upload" onClick={() => file.current?.click()}><Plus size={17} />Add material</button>
           </div>
           <input ref={file} onChange={upload} type="file" accept=".pdf,.docx,.txt,.md" hidden />
@@ -353,6 +409,61 @@ function App() {
         onSignOut={handleSignOut}
         onNavigateTab={t => { setTab(t); setDrawer(false); }}
       />
+      {appAlert && (
+        <AppAlert
+          {...appAlert}
+          onClose={() => setAppAlert(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function AppAlert({
+  title,
+  message,
+  tone,
+  confirmLabel = 'Continue',
+  onConfirm,
+  onClose
+}: AppAlertState & { onClose: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && tone !== 'info') onClose()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [onClose, tone])
+
+  const confirm = () => {
+    if (onConfirm) onConfirm()
+    else onClose()
+  }
+
+  return (
+    <div className="app-alert-backdrop" role="presentation">
+      <section className={`app-alert ${tone}`} role="alertdialog" aria-modal="true" aria-labelledby="app-alert-title">
+        <div className="app-alert-icon">
+          {tone === 'confirm' && <Sparkles size={21} />}
+          {tone === 'success' && <CheckCircle2 size={21} />}
+          {tone === 'error' && <AlertCircle size={21} />}
+          {tone === 'info' && <RotateCw size={21} className="spin" />}
+        </div>
+        <div className="app-alert-content">
+          <h3 id="app-alert-title">{title}</h3>
+          <p>{message}</p>
+        </div>
+        {tone !== 'info' && (
+          <button className="app-alert-close" onClick={onClose} aria-label="Close alert">
+            <X size={18} />
+          </button>
+        )}
+        <div className="app-alert-actions">
+          {tone === 'confirm' && <button className="light-btn" onClick={onClose}>Not now</button>}
+          {tone === 'confirm' && <button className="dark-btn" onClick={confirm}>{confirmLabel}</button>}
+          {tone !== 'confirm' && tone !== 'info' && <button className="dark-btn" onClick={onClose}>Done</button>}
+        </div>
+      </section>
     </div>
   )
 }
@@ -590,7 +701,7 @@ function ProfileModal({
                   type="text"
                   value={displayName}
                   onChange={e => setDisplayName(e.target.value)}
-                  placeholder="e.g. Umesh B or Learner"
+                  placeholder="Enter the Name"
                   maxLength={120}
                 />
               </div>
@@ -685,9 +796,9 @@ function ProfileModal({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <div className="profile-stats-grid">
                 <div className="profile-stat-box">
-                  <span>Total Assessment Attempts</span>
-                  <strong>{dashboardData.signals?.total_attempts ?? 0}</strong>
-                  <small style={{ color: 'var(--text-muted)' }}>{dashboardData.signals?.correct_attempts ?? 0} successful recalls</small>
+                  <span>Completed Assessments</span>
+                  <strong>{dashboardData.signals?.total_assessments ?? 0}</strong>
+                  <small style={{ color: 'var(--text-muted)' }}>{dashboardData.signals?.correct_answers ?? 0} correct answers</small>
                 </div>
                 <div className="profile-stat-box">
                   <span>Overall Accuracy</span>
@@ -918,7 +1029,7 @@ function LoginPage({ authenticate }: { authenticate: (email: string, password: s
     <main className="auth-page">
       <div className="gate-orb"></div>
       <section className="auth-copy">
-        <div className="logo"><span>r</span> ReMind</div>
+        <div className="logo"><span><i>r</i></span> ReMind</div>
         <p className="eyebrow">THE PERSONAL LEARNING SYSTEM</p>
         <h1>Make your knowledge<br /><i>stay with you.</i></h1>
         <p className="lead">A private study space that brings the right ideas back at the right moment.</p>
@@ -948,16 +1059,17 @@ function LoginPage({ authenticate }: { authenticate: (email: string, password: s
   )
 }
 
-function LibraryPage({ headers, refresh }: { headers: () => Record<string, string>, refresh: () => Promise<void> }) {
+function LibraryPage({ headers, refresh, documentsRefreshKey }: { headers: () => Record<string, string>, refresh: () => Promise<void>, documentsRefreshKey: number }) {
   const [docs, setDocs] = useState<any[]>([])
   const [message, setMessage] = useState('')
   const [deleting, setDeleting] = useState<number | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string } | null>(null)
 
   const load = async () => {
     let r = await fetch(API + '/documents', { headers: headers() })
     if (r.ok) setDocs(await r.json())
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [documentsRefreshKey])
 
   const action = async (id: number, path: string) => {
     setMessage('Working with local AI…')
@@ -969,7 +1081,6 @@ function LibraryPage({ headers, refresh }: { headers: () => Record<string, strin
   }
 
   const deleteDoc = async (id: number, name: string) => {
-    if (!window.confirm(`Delete "${name}"?\n\nThis will permanently remove the document and all related concepts, revision queue items, assessments, and learning history for this material. This cannot be undone.`)) return
     setDeleting(id)
     setMessage('')
     try {
@@ -1007,7 +1118,7 @@ function LibraryPage({ headers, refresh }: { headers: () => Record<string, strin
             {d.status !== 'indexed' && <button onClick={() => action(d.id, 'retry')}>Index with Ollama</button>}
             <button onClick={() => action(d.id, 'extract-concepts')}>Extract concepts</button>
             <button
-              onClick={() => deleteDoc(d.id, d.name)}
+              onClick={() => setDeleteConfirm({ id: d.id, name: d.name })}
               disabled={deleting === d.id}
               style={{
                 background: 'var(--feedback-err-bg,#fdf2f2)',
@@ -1034,6 +1145,20 @@ function LibraryPage({ headers, refresh }: { headers: () => Record<string, strin
           <b>No study materials yet</b>
           <p>Upload a document to extract passages, embeddings, and concepts.</p>
         </div>
+      )}
+      {deleteConfirm && (
+        <AppAlert
+          title="Delete study material?"
+          message={`"${deleteConfirm.name}" and all related concepts, revision items, assessments, and learning history will be permanently removed.`}
+          tone="confirm"
+          confirmLabel="Delete permanently"
+          onClose={() => setDeleteConfirm(null)}
+          onConfirm={() => {
+            const { id, name } = deleteConfirm
+            setDeleteConfirm(null)
+            void deleteDoc(id, name)
+          }}
+        />
       )}
     </section>
   )
@@ -1085,19 +1210,19 @@ function AnalyticsPage({ headers }: { headers: () => Record<string, string> }) {
       {stats ? (
         <>
           <div className="stats">
-            <Stat label="Answer attempts" value={stats.sample_size} note="Recorded submissions" icon={<BookOpen />} />
+            <Stat label="Completed assessments" value={stats.assessment_count} note="Submitted assessments" icon={<BookOpen />} />
             <Stat label="Accuracy" value={stats.accuracy === null ? '—' : `${Math.round(stats.accuracy * 100)}%`} note="Observed, not predicted" icon={<Target />} />
             <Stat label="Revision completion" value={stats.revision_completion_rate === null ? '—' : `${Math.round(stats.revision_completion_rate * 100)}%`} note="Completed recommendations" icon={<Clock3 />} />
           </div>
-          {stats.attempts && stats.attempts.length > 0 && (
+          {stats.assessments && stats.assessments.length > 0 && (
             <div style={{ marginTop: 24 }}>
               <p className="eyebrow">ASSESSMENT ATTEMPTS LOG</p>
               <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
-                {stats.attempts.map((att: any, i: number) => (
+                {stats.assessments.map((assessment: any, i: number) => (
                   <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: '#fafcfa', border: '1px solid #edf0eb', borderRadius: 8, fontSize: 12 }}>
-                    <span>Check #{i + 1} · {new Date(att.at).toLocaleString()}</span>
-                    <span className={`badge ${att.score ? 'completed' : 'snoozed'}`}>
-                      {att.score ? '✓ Correct (1/1)' : '✕ Needs Review (0/1)'}
+                    <span>Assessment #{i + 1} · {new Date(assessment.at).toLocaleString()}</span>
+                    <span className={`badge ${assessment.score === assessment.max_score ? 'completed' : 'snoozed'}`}>
+                      {assessment.score}/{assessment.max_score} correct
                     </span>
                   </div>
                 ))}
@@ -1218,9 +1343,13 @@ function AssessmentsPage({
   const [assessment, setAssessment] = useState<any>(null)
   const [responses, setResponses] = useState<Record<number, string>>({})
   const [results, setResults] = useState<Record<number, any>>({})
+  const [questionCount, setQuestionCount] = useState(10)
+  const [questionTypes, setQuestionTypes] = useState<Array<'multiple_choice' | 'true_false'>>(['multiple_choice'])
   const [loading, setLoading] = useState(false)
-  const [submitting, setSubmitting] = useState<number | null>(null)
+  const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+  const [questionTypesOpen, setQuestionTypesOpen] = useState(false)
+  const questionTypesRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     fetch(API + '/concepts', { headers: headers() })
@@ -1235,6 +1364,24 @@ function AssessmentsPage({
     if (initialConceptId) setSelectedId(initialConceptId)
   }, [initialConceptId])
 
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (questionTypesRef.current && !questionTypesRef.current.contains(event.target as Node)) {
+        setQuestionTypesOpen(false)
+      }
+    }
+    if (questionTypesOpen) document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [questionTypesOpen])
+
+  useEffect(() => {
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setQuestionTypesOpen(false)
+    }
+    if (questionTypesOpen) document.addEventListener('keydown', handleEscape)
+    return () => document.removeEventListener('keydown', handleEscape)
+  }, [questionTypesOpen])
+
   const generateAssessment = async () => {
     if (!selectedId) return
     setLoading(true)
@@ -1242,20 +1389,24 @@ function AssessmentsPage({
     setAssessment(null)
     setResponses({})
     setResults({})
+    setQuestionTypesOpen(false)
     try {
       const r = await fetch(API + '/assessments', {
         method: 'POST',
         headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ concept_id: selectedId, question_count: 3, difficulty: 'medium' })
+        body: JSON.stringify({ concept_id: selectedId, question_count: questionCount, question_types: questionTypes, difficulty: 'medium' })
       })
       const data = await r.json()
       if (r.ok) {
         const detailRes = await fetch(`${API}/assessments/${data.id}`, { headers: headers() })
         if (detailRes.ok) setAssessment(await detailRes.json())
         else setAssessment(data)
-        setMessage('')
+        setMessage(data.message || '')
       } else {
-        setMessage(data.detail || 'Failed to generate questions. Ensure Ollama is running.')
+        const detail = data.detail || ''
+        setMessage(detail.includes('invalid structured output')
+          ? 'The local AI returned an incomplete question set. Please retry; no assessment was saved.'
+          : detail || 'Failed to generate questions. Ensure Ollama is running.')
       }
     } catch {
       setMessage('Network error communicating with Ollama service.')
@@ -1264,27 +1415,30 @@ function AssessmentsPage({
     }
   }
 
-  const submitAnswer = async (questionId: number) => {
-    const resp = responses[questionId]
-    if (!resp) return
-    setSubmitting(questionId)
+  const submitAssessment = async () => {
+    if (!assessment || Object.keys(responses).length !== assessment.questions.length) {
+      setMessage('Please answer every question before submitting the assessment.')
+      return
+    }
+    setSubmitting(true)
     try {
-      const r = await fetch(`${API}/questions/${questionId}/answer`, {
+      const r = await fetch(`${API}/assessments/${assessment.id}/submit`, {
         method: 'POST',
         headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response: resp })
+        body: JSON.stringify({ answers: responses })
       })
       const data = await r.json()
       if (r.ok) {
-        setResults(prev => ({ ...prev, [questionId]: data }))
+        setResults(Object.fromEntries(data.results.map((result: any) => [result.question_id, result])))
+        setMessage(`Assessment complete: ${data.score}/${data.max_score} correct.`)
         await refresh()
       } else {
-        alert(data.detail || 'Grading failed.')
+        setMessage(data.detail || 'Could not submit assessment.')
       }
     } catch {
-      alert('Could not submit answer.')
+      setMessage('Could not submit assessment. Please check your connection and try again.')
     } finally {
-      setSubmitting(null)
+      setSubmitting(false)
     }
   }
 
@@ -1311,6 +1465,60 @@ function AssessmentsPage({
                 ))}
               </select>
             </label>
+            <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
+              Questions:
+              <input
+                type="number"
+                min={5}
+                max={20}
+                value={questionCount}
+                onChange={e => {
+                  const value = Number(e.target.value)
+                  if (Number.isInteger(value) && value >= 5 && value <= 20) setQuestionCount(value)
+                }}
+                disabled={loading || !!assessment}
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #dce4da', fontFamily: 'inherit', fontSize: 13 }}
+              />
+            </label>
+            <div className="assessment-type-picker" ref={questionTypesRef}>
+              <button
+                type="button"
+                className="assessment-type-trigger"
+                onClick={() => setQuestionTypesOpen(open => !open)}
+                disabled={loading || !!assessment}
+                aria-expanded={questionTypesOpen}
+                aria-haspopup="listbox"
+              >
+                <span>Question type</span>
+                <strong>{questionTypes.length === 2 ? 'Both types' : questionTypes[0] === 'multiple_choice' ? 'Multiple choice' : 'True / False'}</strong>
+                <ChevronDown size={15} />
+              </button>
+              {questionTypesOpen && (
+                <div className="assessment-type-menu" role="listbox" aria-label="Question types">
+                  {[
+                    ['multiple_choice', 'Multiple choice'],
+                    ['true_false', 'True / False']
+                  ].map(([value, label]) => {
+                    const type = value as 'multiple_choice' | 'true_false'
+                    return (
+                      <label key={value} className="assessment-type-option">
+                        <input
+                          type="checkbox"
+                          checked={questionTypes.includes(type)}
+                          onChange={() => {
+                            if (questionTypes.length === 1 && questionTypes.includes(type)) return
+                            setQuestionTypes(current => current.includes(type)
+                              ? current.filter(item => item !== type)
+                              : [...current, type])
+                          }}
+                        />
+                        <span>{label}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
             <button className="dark-btn" onClick={generateAssessment} disabled={loading || !selectedId}>
               {loading ? <><RotateCw size={14} className="spin" /> Generating with local AI…</> : <><Target size={14} /> Generate recall check</>}
             </button>
@@ -1339,8 +1547,8 @@ function AssessmentsPage({
                             key={oi}
                             type="button"
                             className={`question-option ${responses[q.id] === opt ? 'selected' : ''}`}
-                            onClick={() => !res && setResponses(p => ({ ...p, [q.id]: opt }))}
-                            disabled={!!res}
+                            onClick={() => !Object.keys(results).length && setResponses(p => ({ ...p, [q.id]: opt }))}
+                            disabled={submitting || Object.keys(results).length > 0}
                           >
                             <span>{String.fromCharCode(65 + oi)}.</span> {opt}
                           </button>
@@ -1355,8 +1563,8 @@ function AssessmentsPage({
                             key={opt}
                             type="button"
                             className={`question-option ${responses[q.id] === opt ? 'selected' : ''}`}
-                            onClick={() => !res && setResponses(p => ({ ...p, [q.id]: opt }))}
-                            disabled={!!res}
+                            onClick={() => !Object.keys(results).length && setResponses(p => ({ ...p, [q.id]: opt }))}
+                            disabled={submitting || Object.keys(results).length > 0}
                           >
                             {opt}
                           </button>
@@ -1364,26 +1572,7 @@ function AssessmentsPage({
                       </div>
                     )}
 
-                    {q.kind === 'short_answer' && (
-                      <textarea
-                        className="answer-box"
-                        placeholder="Type your answer grounded in your study material…"
-                        value={responses[q.id] || ''}
-                        onChange={e => !res && setResponses(p => ({ ...p, [q.id]: e.target.value }))}
-                        disabled={!!res}
-                      />
-                    )}
-
-                    {!res ? (
-                      <button
-                        className="dark-btn"
-                        style={{ marginTop: 8 }}
-                        onClick={() => submitAnswer(q.id)}
-                        disabled={!responses[q.id] || submitting === q.id}
-                      >
-                        {submitting === q.id ? 'Grading…' : 'Submit response'}
-                      </button>
-                    ) : (
+                    {res && (
                       <div className={`feedback-box ${res.correct ? 'correct' : 'incorrect'}`}>
                         <b>{res.correct ? '✓ Correct' : '✕ Needs Review'} (Score: {res.score}/1)</b>
                         <p style={{ marginTop: 4 }}>{res.feedback}</p>
@@ -1395,6 +1584,14 @@ function AssessmentsPage({
                   </div>
                 )
               })}
+              <button
+                className="dark-btn"
+                style={{ marginTop: 18 }}
+                onClick={submitAssessment}
+                disabled={submitting || Object.keys(results).length > 0 || Object.keys(responses).length !== assessment.questions.length}
+              >
+                {submitting ? 'Grading assessment…' : 'Submit assessment'}
+              </button>
             </div>
           )}
         </div>
@@ -1424,6 +1621,10 @@ function Overview({
   onStartAssessment: (conceptId: number) => void
 }) {
   const total = d.documents
+  const signals = d.signals
+  const averageScore = signals?.total_questions
+    ? Math.round((signals.correct_answers / signals.total_questions) * 100)
+    : null
   return (
     <>
       <section className="hero">
@@ -1514,52 +1715,48 @@ function Overview({
         </div>
 
         <div className="panel insights">
-          <p className="eyebrow">LEARNING SIGNALS</p>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <h3>Built from evidence,<br />not guesses.</h3>
-            {d.signals && d.signals.accuracy !== null && (
-              <div style={{ textAlign: 'right' }}>
-                <span style={{ fontSize: 24, fontWeight: 800, color: '#bde574', letterSpacing: -0.8 }}>{d.signals.accuracy}%</span>
-                <span style={{ display: 'block', fontSize: 10, color: '#a2b5ad', marginTop: -3 }}>accuracy</span>
-              </div>
-            )}
+          <div className="insights-heading">
+            <div>
+              <p className="eyebrow">LEARNING SIGNALS</p>
+              <h3>Your progress at a glance</h3>
+              <p className="insights-subtitle">A live view of your completed assessment performance.</p>
+            </div>
+            <div className="insights-score">
+              <strong>{signals?.accuracy ?? '—'}{signals?.accuracy !== null && signals?.accuracy !== undefined ? '%' : ''}</strong>
+              <span>overall accuracy</span>
+            </div>
           </div>
-          <div className="signal">
-            <div className="bar" style={{ display: 'flex', gap: 8, alignItems: 'flex-end', minHeight: 67 }}>
-              {d.signals && d.signals.recent && d.signals.recent.length > 0 ? (
-                d.signals.recent.map((item, idx) => (
+
+          <div className="insight-metrics">
+            <div><span>Assessments</span><strong>{signals?.total_assessments ?? 0}</strong><small>completed</small></div>
+            <div><span>Questions answered</span><strong>{signals?.total_questions ?? 0}</strong><small>{signals?.correct_answers ?? 0} correct</small></div>
+            <div><span>Retention stability</span><strong>{signals?.retention_rate ?? '—'}{signals?.retention_rate !== null && signals?.retention_rate !== undefined ? '%' : ''}</strong><small>memory signal</small></div>
+          </div>
+
+          <div className="insights-chart-wrap">
+            <div className="chart-title"><span>Assessment performance</span><small>Latest {signals?.recent.length ?? 0} assessments</small></div>
+            <div className="insights-chart">
+              <div className="chart-grid"><i></i><i></i><i></i></div>
+              {signals?.recent.length ? signals.recent.map((item, idx) => (
+                <div className="chart-column" key={idx}>
+                  <div className="chart-value">{item.score}/{item.max_score}</div>
                   <i
-                    key={idx}
-                    style={{
-                      height: `${item.height}%`,
-                      background: item.correct ? '#bde574' : '#e07a5f',
-                      flex: 1,
-                      minWidth: 14,
-                      maxWidth: 24,
-                      borderRadius: '3px 3px 0 0',
-                      transition: 'height 0.3s ease'
-                    }}
-                    title={`Check ${idx + 1}: ${item.correct ? 'Correct (1/1)' : 'Incorrect (0/1)'}`}
+                    className={item.correct ? 'chart-bar is-positive' : 'chart-bar'}
+                    style={{ height: `${Math.max(item.height, 8)}%` }}
+                    title={`Assessment ${idx + 1}: ${item.score}/${item.max_score}`}
                   />
-                ))
-              ) : (
-                <>
-                  <i style={{ height: '24%', opacity: 0.25 }}></i>
-                  <i style={{ height: '48%', opacity: 0.25 }}></i>
-                  <i style={{ height: '32%', opacity: 0.25 }}></i>
-                  <i style={{ height: '65%', opacity: 0.25 }}></i>
-                  <i style={{ height: '42%', opacity: 0.25 }}></i>
-                </>
+                  <small>#{idx + 1}</small>
+                </div>
+              )) : (
+                <div className="chart-empty">Complete an assessment to start your progress trend.</div>
               )}
             </div>
-            {d.signals && d.signals.total_attempts > 0 ? (
-              <small>
-                {d.signals.correct_attempts} of {d.signals.total_attempts} checks correct ({d.signals.accuracy}% observed accuracy).
-                {d.signals.retention_rate !== null ? ` Retention stability: ${d.signals.retention_rate}%.` : ''}
-              </small>
-            ) : (
-              <small>Your retention trend will appear after completed assessments.</small>
-            )}
+          </div>
+
+          <div className="insights-footer">
+            <span><i className="legend-dot positive"></i>Strong result</span>
+            <span><i className="legend-dot"></i>Needs review</span>
+            {averageScore !== null && <b>{averageScore}% average across all answers</b>}
           </div>
         </div>
       </section>

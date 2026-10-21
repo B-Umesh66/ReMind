@@ -36,8 +36,10 @@ class OllamaProvider:
     async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None)->str:
         async with self.limit:
             try:
-                num_predict = int(os.getenv('OLLAMA_NUM_PREDICT', '1500'))
-                num_ctx = int(os.getenv('OLLAMA_NUM_CTX', '4096'))
+                # Assessment batches can contain several options and explanations.
+                # Keep enough room for a complete JSON document instead of truncating it.
+                num_predict = int(os.getenv('OLLAMA_NUM_PREDICT', '4000'))
+                num_ctx = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
                 async with httpx.AsyncClient(timeout=self.timeout) as c:
                     payload={'model':self.llm,'prompt':prompt,'stream':False,'think':False,'keep_alive':0,'options':{'temperature':0.1,'num_ctx':num_ctx,'num_predict':num_predict}}
                     if output_format is not None: payload['format']=output_format
@@ -58,14 +60,27 @@ class OllamaProvider:
             candidate = candidate.split('```json', 1)[1].split('```', 1)[0].strip()
         elif '```' in candidate:
             candidate = candidate.split('```', 1)[1].split('```', 1)[0].strip()
-        first=candidate.find('{'); last=candidate.rfind('}')
-        if first < 0 or last <= first: raise InvalidAIResponse('Model did not return a JSON object.')
-        json_str = candidate[first:last+1]
+        first=candidate.find('{')
+        if first < 0: raise InvalidAIResponse('Model did not return a JSON object.')
+        parsed: Any
         try:
-            return schema.model_validate(json.loads(json_str))
-        except (json.JSONDecodeError, ValidationError) as e:
+            # Decode the first complete object and ignore trailing prose/fences.
+            parsed, _ = json.JSONDecoder().raw_decode(candidate[first:])
+        except json.JSONDecodeError:
+            last=candidate.rfind('}')
+            if last <= first: raise InvalidAIResponse('Model did not return a complete JSON object.')
+            json_str = candidate[first:last+1]
+            try:
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError:
+                parsed = None
+        if parsed is None:
+            raise InvalidAIResponse('Model returned invalid structured output.')
+        try:
+            return schema.model_validate(parsed)
+        except ValidationError as e:
             # Clean common trailing commas before closing braces/brackets and retry
-            cleaned_json = re.sub(r',\s*([\]}])', r'\1', json_str)
+            cleaned_json = re.sub(r',\s*([\]}])', r'\1', candidate[first:])
             try:
                 return schema.model_validate(json.loads(cleaned_json))
             except Exception:

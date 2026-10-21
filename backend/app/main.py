@@ -1,6 +1,6 @@
 """ReMind API: a local-first adaptive learning service."""
 from __future__ import annotations
-import json, os, re, math
+import json, logging, os, re, math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Any
@@ -18,6 +18,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 from .ai import provider, AIUnavailable, InvalidAIResponse
 
 ROOT = Path(__file__).resolve().parents[2]
+logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv('DATABASE_URL', f"sqlite:///{ROOT / 'remind.db'}")
 engine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False} if DATABASE_URL.startswith('sqlite') else {})
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
@@ -111,8 +112,21 @@ class PasswordChange(BaseModel): current_password: str; new_password: str = Fiel
 class AccountDelete(BaseModel): password: str
 class RevisionUpdate(BaseModel): status: str
 class AskRequest(BaseModel): query: str = Field(min_length=3,max_length=2000)
-class AssessmentCreate(BaseModel): concept_id: int; question_count: int = Field(default=3,ge=1,le=10); difficulty: str = Field(default='medium', pattern='^(easy|medium|hard)$')
+class AssessmentCreate(BaseModel):
+    concept_id: int
+    question_count: int = Field(default=10, ge=5, le=20)
+    question_types: list[str] = Field(default_factory=lambda: ['multiple_choice'], min_length=1, max_length=2)
+    difficulty: str = Field(default='medium', pattern='^(easy|medium|hard)$')
+
+    @field_validator('question_types')
+    @classmethod
+    def validate_question_types(cls, value: list[str]) -> list[str]:
+        allowed = {'multiple_choice', 'true_false'}
+        if not set(value).issubset(allowed) or len(set(value)) != len(value):
+            raise ValueError('question_types must contain unique multiple_choice and/or true_false values')
+        return value
 class AnswerSubmit(BaseModel): response: str = Field(min_length=1,max_length=10000)
+class AssessmentSubmit(BaseModel): answers: dict[int, str] = Field(min_length=1, max_length=20)
 class ExtractedConcept(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default='', max_length=2000)
@@ -138,7 +152,7 @@ class ExtractionResult(BaseModel):
     relationships: list[ExtractedRelationship] = Field(default_factory=list, max_length=25)
 
 class GeneratedQuestion(BaseModel):
-    kind: str = Field(pattern='^(multiple_choice|true_false|short_answer)$')
+    kind: str = Field(pattern='^(multiple_choice|true_false)$')
     prompt: str = Field(min_length=5, max_length=1000)
     options: list[str] = Field(default_factory=list, max_length=6)
     answer: str = Field(min_length=1, max_length=500)
@@ -146,8 +160,19 @@ class GeneratedQuestion(BaseModel):
     source_index: int = Field(default=0, ge=0)
 
 class GeneratedQuestions(BaseModel):
-    questions: list[GeneratedQuestion] = Field(min_length=1, max_length=10)
+    questions: list[GeneratedQuestion] = Field(min_length=1, max_length=20)
 class RubricEvaluation(BaseModel): score: int = Field(ge=0,le=1); feedback: str = Field(min_length=1,max_length=500)
+
+def question_key(prompt: str) -> str:
+    """Normalize prompt text while preserving meaningful numbers and terms."""
+    return re.sub(r'[^\w]+', ' ', prompt.casefold(), flags=re.UNICODE).strip()
+
+def valid_generated_question(item: GeneratedQuestion, source_count: int, question_types: list[str]) -> bool:
+    return item.source_index < source_count and item.kind in question_types and (
+        (item.kind == 'multiple_choice' and len(item.options) == 4) or
+        (item.kind == 'true_false' and len(item.options) == 2)
+    )
+
 @app.get('/api/v1/health')
 async def health():
     url=os.getenv('OLLAMA_BASE_URL','http://localhost:11434')
@@ -253,19 +278,29 @@ def dashboard(u:User=Depends(current_user),s:Session=Depends(db)):
     concepts=s.scalars(select(Concept).where(Concept.user_id==u.id)).all()
     profiles=s.scalars(select(Profile).where(Profile.user_id==u.id)).all()
     revisions=s.scalars(select(Revision).where(Revision.user_id==u.id,Revision.status.in_(['pending','recommended','scheduled'])).order_by(Revision.priority.desc())).all()
-    attempts=s.scalars(select(Attempt).where(Attempt.user_id==u.id).order_by(Attempt.created_at)).all()
-    total_attempts = len(attempts)
-    correct_attempts = sum(a.score for a in attempts)
-    accuracy = round((correct_attempts / total_attempts) * 100) if total_attempts > 0 else None
+    assessments=s.scalars(select(Assessment).where(Assessment.user_id==u.id,Assessment.status=='completed').order_by(Assessment.created_at)).all()
+    assessment_stats=[]
+    for assessment in assessments:
+        questions=s.scalars(select(Question).where(Question.assessment_id==assessment.id)).all()
+        question_ids=[question.id for question in questions]
+        attempts=s.scalars(select(Attempt).where(Attempt.user_id==u.id,Attempt.question_id.in_(question_ids))).all() if question_ids else []
+        score=sum(attempt.score for attempt in attempts)
+        max_score=len(questions)
+        assessment_stats.append({'id':assessment.id,'score':score,'max_score':max_score,'at':assessment.created_at})
+    total_assessments=len(assessment_stats)
+    total_score=sum(item['score'] for item in assessment_stats)
+    total_questions=sum(item['max_score'] for item in assessment_stats)
+    accuracy=round((total_score/total_questions)*100) if total_questions else None
     assessed_profiles = [p for p in profiles if p.attempts > 0]
     retention_rate = round(sum(max(5, 100 - (p.decay_risk or 50)) for p in assessed_profiles) / len(assessed_profiles)) if assessed_profiles else None
     recent = []
-    for a in attempts[-8:]:
+    for assessment in assessment_stats[-8:]:
         recent.append({
-            'score': a.score,
-            'height': 90 if a.score == 1 else 28,
-            'correct': bool(a.score),
-            'date': a.created_at.isoformat()
+            'score': assessment['score'],
+            'max_score': assessment['max_score'],
+            'height': round((assessment['score']/assessment['max_score'])*100) if assessment['max_score'] else 0,
+            'correct': assessment['score'] == assessment['max_score'],
+            'date': assessment['at'].isoformat()
         })
     return {
         'documents':len(docs),
@@ -284,8 +319,9 @@ def dashboard(u:User=Depends(current_user),s:Session=Depends(db)):
             'status':r.status
         } for r in revisions],
         'signals': {
-            'total_attempts': total_attempts,
-            'correct_attempts': correct_attempts,
+            'total_assessments': total_assessments,
+            'correct_answers': total_score,
+            'total_questions': total_questions,
             'accuracy': accuracy,
             'retention_rate': retention_rate,
             'recent': recent
@@ -482,21 +518,105 @@ async def ask(body:AskRequest,u:User=Depends(current_user),s:Session=Depends(db)
     return {'answer':answer,'citations':[{'chunk_id':c.id,'document':d.name,'page':c.page,'excerpt':c.content[:280]} for _,c,d in ranked]}
 @app.post('/api/v1/assessments')
 async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s:Session=Depends(db)):
-    c=owned_concept(s,u,body.concept_id); chunks=s.scalars(select(Chunk).join(Document).where(Document.user_id==u.id).order_by(Chunk.id).limit(4)).all()
+    c=owned_concept(s,u,body.concept_id); chunks=s.scalars(select(Chunk).join(Document).where(Document.user_id==u.id).order_by(Chunk.id).limit(8)).all()
     if not chunks: raise HTTPException(422,'Upload material before creating an assessment.')
-    sources='\n\n'.join(f'[{i}] {chunk.content[:650]}' for i,chunk in enumerate(chunks))
-    prompt=(f"Create exactly {body.question_count} {body.difficulty} learning questions about '{c.name}', only from the passages. "
-      "Do not invent facts. Use multiple_choice only with exactly four options, true_false with options [True,False], or short_answer. "
-      "Schema: {questions:[{kind,prompt,options,answer,explanation,source_index}]}.\n\n"+sources)
-    try: generated=await provider.structured(prompt,GeneratedQuestions)
-    except AIUnavailable as e: raise HTTPException(503,str(e))
-    except InvalidAIResponse as e: raise HTTPException(502,str(e))
-    valid=[x for x in generated.questions if x.source_index < len(chunks) and (x.kind!='multiple_choice' or len(x.options)==4) and (x.kind!='true_false' or len(x.options)==2)]
-    if not valid: raise HTTPException(502,'The model did not produce valid source-grounded questions. Please retry.')
+    selected_types=', '.join(body.question_types)
+    previous_prompts=s.scalars(
+        select(Question.prompt)
+        .join(Assessment, Question.assessment_id==Assessment.id)
+        .where(
+            Assessment.user_id==u.id,
+            Question.concept_id==c.id
+        )
+        .order_by(Assessment.created_at.desc(), Question.id.desc())
+        .limit(20)
+    ).all()
+    # Historical questions are excluded from the prompt when possible, but
+    # may be reused if the material cannot support enough new questions.
+    unique_keys=set()
+    valid: list[GeneratedQuestion] = []
+    rejected_duplicates = 0
+    rejected_invalid = 0
+    attempts = 0
+    objective_sets = (
+        'definitions, terminology, and core facts',
+        'explanations, mechanisms, and cause-and-effect',
+        'comparisons, distinctions, and relationships',
+        'applications, examples, and practical scenarios',
+        'sequence, constraints, trade-offs, and edge cases',
+    )
+    for attempt in range(5):
+        remaining=body.question_count-len(valid)
+        if remaining <= 0: break
+        attempts += 1
+        candidate_count=min(12, max(remaining + 3, 8))
+        excluded='\n'.join(f'- {prompt}' for prompt in reversed(previous_prompts[-8:]))
+        objective = objective_sets[attempt % len(objective_sets)]
+        ordered_chunks=chunks[attempt % len(chunks):] + chunks[:attempt % len(chunks)]
+        attempt_sources='\n\n'.join(f'[{i}] {chunk.content[:550]}' for i,chunk in enumerate(ordered_chunks))
+        prompt=(f"Create up to {candidate_count} candidate {body.difficulty} learning questions about '{c.name}', only from the passages. "
+          f"Every question must be one of these kinds: {selected_types}. Do not invent facts. "
+          "Do not repeat, paraphrase, or lightly reword any excluded question. "
+          f"Focus this batch on {objective}. Prefer facts not already tested and use different source passages. "
+          "For multiple_choice use exactly four options; for true_false use options [True,False]. "
+          "Keep each prompt and explanation concise. Return valid JSON only. "
+          "Schema: {questions:[{kind,prompt,options,answer,explanation,source_index}]}."
+          f"\n\nExcluded questions:\n{excluded or '- None'}\n\nSource passages:\n{attempt_sources}")
+        try:
+            generated=await provider.structured(prompt,GeneratedQuestions)
+        except AIUnavailable as e: raise HTTPException(503,str(e))
+        except InvalidAIResponse as e:
+            logger.warning(
+                'assessment_generation_invalid_output user=%s concept=%s attempt=%s error=%s',
+                u.id, c.id, attempts, str(e)
+            )
+            continue
+        accepted_before=len(valid)
+        for item in generated.questions:
+            key=question_key(item.prompt)
+            if not valid_generated_question(item, len(chunks), body.question_types):
+                rejected_invalid += 1
+            elif not key or key in unique_keys:
+                rejected_duplicates += 1
+            else:
+                unique_keys.add(key)
+                previous_prompts.append(item.prompt)
+                valid.append(item)
+                if len(valid) == body.question_count: break
+        logger.info(
+            'assessment_generation_attempt user=%s concept=%s attempt=%s '
+            'returned=%s accepted=%s duplicates=%s invalid=%s remaining=%s',
+            u.id, c.id, attempts, len(generated.questions), len(valid)-accepted_before,
+            rejected_duplicates, rejected_invalid, body.question_count-len(valid)
+        )
+    logger.info(
+        'assessment_generation user=%s concept=%s requested=%s candidates=%s unique=%s '
+        'duplicates=%s invalid=%s attempts=%s',
+        u.id, c.id, body.question_count, len(valid) + rejected_duplicates + rejected_invalid,
+        len(valid), rejected_duplicates, rejected_invalid, attempts
+    )
+    if len(valid) < 1:
+        raise HTTPException(
+            502,
+            f'Only {len(valid)} unique questions could be generated from the available material; '
+            'no usable assessment could be created. Please add more material or retry.'
+        )
     a=Assessment(user_id=u.id,title=f'{c.name} recall check');s.add(a);s.flush()
     for item in valid:
         s.add(Question(assessment_id=a.id,concept_id=c.id,kind=item.kind,prompt=item.prompt,options_json=json.dumps(item.options),answer=item.answer,explanation=item.explanation,source_chunk_id=chunks[item.source_index].id))
-    s.commit();return {'id':a.id,'title':a.title,'status':a.status,'questions':[{'id':q.id,'prompt':q.prompt,'kind':q.kind} for q in s.scalars(select(Question).where(Question.assessment_id==a.id))]}
+    s.commit()
+    questions=s.scalars(select(Question).where(Question.assessment_id==a.id).order_by(Question.id)).all()
+    generated_count=len(questions)
+    message=None if generated_count == body.question_count else (
+        f'Generated {generated_count} unique questions instead of {body.question_count}; '
+        'the available material did not support more sufficiently distinct questions.'
+    )
+    return {
+        'id':a.id,'title':a.title,'status':a.status,
+        'requested_count':body.question_count,'generated_count':generated_count,
+        'partial':generated_count < body.question_count,'message':message,
+        'questions':[{'id':q.id,'prompt':q.prompt,'kind':q.kind} for q in questions]
+    }
 @app.get('/api/v1/assessments/{assessment_id}')
 def assessment(assessment_id:int,u:User=Depends(current_user),s:Session=Depends(db)):
     a=s.scalar(select(Assessment).where(Assessment.id==assessment_id,Assessment.user_id==u.id))
@@ -523,10 +643,75 @@ async def answer_question(question_id:int,body:AnswerSubmit,u:User=Depends(curre
         active_rev=s.scalar(select(Revision).where(Revision.user_id==u.id,Revision.concept_id==q.concept_id,Revision.status.in_(['pending','recommended','scheduled'])))
         if active_rev: active_rev.status='completed'
     p.decay_risk=decay(p,datetime.now(timezone.utc));s.commit();return {'score':score,'max_score':1,'correct':correct,'feedback':feedback,'decay_risk':p.decay_risk}
+@app.post('/api/v1/assessments/{assessment_id}/submit')
+def submit_assessment(assessment_id:int,body:AssessmentSubmit,u:User=Depends(current_user),s:Session=Depends(db)):
+    assessment=s.scalar(select(Assessment).where(Assessment.id==assessment_id,Assessment.user_id==u.id))
+    if not assessment: raise HTTPException(404,'Assessment not found')
+    questions=s.scalars(select(Question).where(Question.assessment_id==assessment.id).order_by(Question.id)).all()
+    question_ids={q.id for q in questions}
+    if len(questions) < 1 or set(body.answers) != question_ids:
+        raise HTTPException(422,'Answer every question before submitting the assessment.')
+    if any(not response.strip() for response in body.answers.values()):
+        raise HTTPException(422,'Every question must have an answer.')
+    if s.scalar(select(Attempt).where(Attempt.user_id==u.id,Attempt.question_id.in_(question_ids))):
+        raise HTTPException(409,'This assessment has already been submitted.')
+
+    now=datetime.now(timezone.utc)
+    results=[]
+    for question in questions:
+        response=body.answers[question.id]
+        correct=question.answer.strip().lower()==response.strip().lower()
+        score=int(correct)
+        feedback=question.explanation if correct else f'Not yet correct. {question.explanation}'
+        s.add(Attempt(
+            user_id=u.id,
+            question_id=question.id,
+            response=response,
+            score=score,
+            feedback=feedback,
+            grading_method='deterministic'
+        ))
+        profile=s.scalar(select(Profile).where(Profile.user_id==u.id,Profile.concept_id==question.concept_id))
+        if not profile:
+            raise HTTPException(422,'Learning profile is missing for one of the assessment concepts.')
+        profile.attempts += 1
+        profile.correct += score
+        if correct:
+            profile.last_success=now
+            active_rev=s.scalar(select(Revision).where(
+                Revision.user_id==u.id,
+                Revision.concept_id==question.concept_id,
+                Revision.status.in_(['pending','recommended','scheduled'])
+            ))
+            if active_rev: active_rev.status='completed'
+        profile.decay_risk=decay(profile,now)
+        results.append({
+            'question_id':question.id,
+            'score':score,
+            'max_score':1,
+            'correct':correct,
+            'feedback':feedback,
+            'decay_risk':profile.decay_risk
+        })
+    assessment.status='completed'
+    s.commit()
+    return {
+        'assessment_id':assessment.id,
+        'score':sum(result['score'] for result in results),
+        'max_score':len(results),
+        'results':results
+    }
 @app.get('/api/v1/analytics')
 def analytics(u:User=Depends(current_user),s:Session=Depends(db)):
-    attempts=s.scalars(select(Attempt).where(Attempt.user_id==u.id).order_by(Attempt.created_at)).all(); revisions=s.scalars(select(Revision).where(Revision.user_id==u.id)).all()
-    return {'sample_size':len(attempts),'accuracy':(sum(a.score for a in attempts)/len(attempts) if attempts else None),'attempts':[{'at':a.created_at,'score':a.score} for a in attempts],'revision_completion_rate':(sum(r.status=='completed' for r in revisions)/len(revisions) if revisions else None),'note':'Descriptive statistics only; missing evidence is not treated as zero.'}
+    assessments=s.scalars(select(Assessment).where(Assessment.user_id==u.id,Assessment.status=='completed').order_by(Assessment.created_at)).all(); revisions=s.scalars(select(Revision).where(Revision.user_id==u.id)).all()
+    assessment_stats=[]
+    for assessment in assessments:
+        questions=s.scalars(select(Question).where(Question.assessment_id==assessment.id)).all()
+        question_ids=[question.id for question in questions]
+        attempts=s.scalars(select(Attempt).where(Attempt.user_id==u.id,Attempt.question_id.in_(question_ids))).all() if question_ids else []
+        assessment_stats.append({'at':assessment.created_at,'score':sum(a.score for a in attempts),'max_score':len(questions)})
+    total_score=sum(item['score'] for item in assessment_stats); total_questions=sum(item['max_score'] for item in assessment_stats)
+    return {'assessment_count':len(assessment_stats),'accuracy':(total_score/total_questions if total_questions else None),'assessments':assessment_stats,'revision_completion_rate':(sum(r.status=='completed' for r in revisions)/len(revisions) if revisions else None),'note':'Descriptive statistics only; missing evidence is not treated as zero.'}
 @app.get('/api/v1/revisions')
 def get_revisions(u:User=Depends(current_user),s:Session=Depends(db)):
     concepts={c.id:c for c in s.scalars(select(Concept).where(Concept.user_id==u.id))}
