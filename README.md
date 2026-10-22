@@ -9,7 +9,7 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
 - A polished React learning dashboard with real API-backed metrics and honest empty states.
 - Knowledge concepts seeded only from explicit document headings (not claimed as mastery).
 - Immutable-ready profile structure, deterministic decay-risk calculation, and revision recommendations.
-- Ollama embedding, bounded grounded RAG, citations, health/model configuration visibility, and no paid-provider fallback.
+- Ollama embedding, bounded grounded RAG, citations, health/model configuration visibility, and optional Gemini generation with safe local fallback.
 - Assessment creation/taking, immutable attempt records, deterministic grading baseline, profile updates, graph API, and analytics.
 
 ## Run locally
@@ -22,6 +22,8 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
 Do **not** open `frontend/index.html` by double-clicking it: browser module security will leave a blank page. Use Vite's URL above. For a single-server preview, run `npm run build` inside `frontend`, then start the backend and open `http://127.0.0.1:8000/`.
 
 For local AI, install [Ollama](https://ollama.com), then run `ollama pull qwen3:4b` and `ollama pull qwen3-embedding:0.6b`. ReMind detects availability at `GET /api/v1/health`; it never claims a generative action succeeded when Ollama is unavailable.
+
+Generation provider configuration is backend-only. Set `AI_PROVIDER_MODE=auto` (default) to prefer Gemini when `GEMINI_API_KEY` is present and fall back to Ollama for temporary cloud failures. Set `AI_PROVIDER_MODE=gemini` to require Gemini, or `AI_PROVIDER_MODE=ollama` for local-only processing. `GEMINI_MODEL` defaults to `gemini-2.0-flash`. Embeddings remain local Ollama embeddings in every mode; local-only mode never sends document content to Gemini.
 
 After downloading models, start the local service with `ollama serve`. See [the Ollama integration pass notes](docs/PASS_OLLAMA_INTEGRATION.md) for the implemented workflows and verification status.
 
@@ -55,4 +57,3 @@ backend/tests/          deterministic decay tests
 frontend/src/           responsive React interface
 docker-compose.yml      PostgreSQL + pgvector local service
 ```
-

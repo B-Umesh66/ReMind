@@ -9,6 +9,7 @@ This pass connects ReMind's local-AI workflows to the installed Ollama model con
 - RAG uses the embedding model to rank only the signed-in user's persisted chunks; Qwen answers with the selected passages and real citations.
 - Model output is parsed as JSON, stripped of optional Qwen thinking text, then validated with Pydantic before it can create database records.
 - The single semaphore controlled by `AI_CONCURRENCY_LIMIT` defaults to `1`, so the two models are not driven concurrently by the application.
+- Text generation can optionally route through Gemini using the backend-only `AI_PROVIDER_MODE` setting. Ollama remains the embedding provider and is the exclusive provider in `ollama` mode.
 
 ## Frontend additions
 

@@ -1,6 +1,6 @@
 import { Component, ReactNode, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AlertCircle, AlertTriangle, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronDown, ChevronRight, Clock3, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, Trash2, User, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowUp, BookOpen, BrainCircuit, ChartNoAxesCombined, CheckCircle2, ChevronDown, ChevronRight, Clock3, Copy, FileUp, Grid2X2, HardDrive, Library, Lock, Menu, MessageCircle, Moon, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RotateCw, Settings, Shield, Sparkles, Sun, Target, Trash2, User, X } from 'lucide-react'
 import './styles.css'
 
 const API = '/api/v1'
@@ -53,11 +53,13 @@ function App() {
   const [user, setUser] = useState<UserProfile | null>(null)
   const [data, setData] = useState<Dashboard>(demo)
   const [tab, setTab] = useState('Overview')
+  const [chatSessionKey, setChatSessionKey] = useState(0)
   const [drawer, setDrawer] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [rebuilding, setRebuilding] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [appAlert, setAppAlert] = useState<AppAlertState | null>(null)
+  const [assessmentToOpenId, setAssessmentToOpenId] = useState<number | null>(null)
   const [selectedConceptId, setSelectedConceptId] = useState<number | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -73,8 +75,36 @@ function App() {
   // Apply theme + scale on mount and change
   useEffect(() => { applyTheme(theme); localStorage.remindTheme = theme }, [theme])
   useEffect(() => { applyScale(fscale); localStorage.remindScale = fscale }, [fscale])
+  useEffect(() => {
+    if (!token || !('Notification' in window) || Notification.permission !== 'default') return
+    if (localStorage.remindNotificationPermissionAsked === 'true') return
+    localStorage.remindNotificationPermissionAsked = 'true'
+    void Notification.requestPermission()
+  }, [token])
+  useEffect(() => {
+    if (!appAlert || !['Assessment ready', 'Assistant response ready'].includes(appAlert.title) || !document.hidden) return
+    const originalTitle = document.title
+    let showAlertTitle = true
+    const interval = window.setInterval(() => {
+      document.title = showAlertTitle ? `${appAlert.title} · ReMind` : originalTitle
+      showAlertTitle = !showAlertTitle
+    }, 1200)
+    const restoreTitle = () => { document.title = originalTitle }
+    document.addEventListener('visibilitychange', restoreTitle, { once: true })
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', restoreTitle)
+      document.title = originalTitle
+    }
+  }, [appAlert])
 
   const toggleTheme = () => setTheme(t => t === 'light' ? 'dark' : 'light')
+  const openFreshAssistant = () => {
+    setAppAlert(null)
+    setChatSessionKey(key => key + 1)
+    setTab('AI Study Assistant')
+    setDrawer(false)
+  }
 
   const headers = () => ({ Authorization: `Bearer ${token}` })
 
@@ -139,14 +169,13 @@ function App() {
       if (r.ok) {
         const body = await r.json()
         await load()
-        setNotice(body.message || 'Recommendations refreshed successfully.')
-        setTimeout(() => setNotice(null), 4500)
+        setAppAlert({ title: 'Revision queue updated', message: body.message || 'Your revision recommendations are up to date.', tone: 'success' })
       } else {
         const err = await r.json().catch(() => ({}))
-        setAppAlert({ title: 'Refresh unavailable', message: err.detail || 'Could not refresh recommendations.', tone: 'error' })
+        setAppAlert({ title: 'Revision queue update failed', message: err.detail || 'Revision recommendations could not be recalculated. Please try again.', tone: 'error' })
       }
     } catch {
-      setAppAlert({ title: 'Connection problem', message: 'Could not connect to backend server.', tone: 'error' })
+      setAppAlert({ title: 'Revision queue update failed', message: 'Could not connect to update revision recommendations. Please try again.', tone: 'error' })
     } finally {
       setRebuilding(false)
     }
@@ -154,6 +183,8 @@ function App() {
 
   const startAssessmentForConcept = (cid: number) => {
     setSelectedConceptId(cid)
+    setAssessmentToOpenId(null)
+    localStorage.removeItem('remindPendingAssessmentId')
     setTab('Assessments')
   }
 
@@ -210,7 +241,7 @@ function App() {
     }
   }
 
-  const nav = ['Overview', 'My Library', 'Knowledge Map', 'Assessments', 'Revision Center', 'Analytics']
+  const nav = ['Overview', 'My Library', 'Knowledge Map', 'AI Study Assistant', 'Assessments', 'Revision Center', 'Analytics']
   if (!token) return <LoginPage authenticate={authenticate} />
   const shared = { token, headers, refresh: load, documentsRefreshKey }
 
@@ -311,9 +342,20 @@ function App() {
         </div>
         <nav>
           {nav.map((n, i) => {
-            const I = [Grid2X2, Library, BrainCircuit, BookOpen, Target, ChartNoAxesCombined][i]
+            const I = [Grid2X2, Library, BrainCircuit, MessageCircle, BookOpen, Target, ChartNoAxesCombined][i]
             return (
-              <button key={n} className={tab === n ? 'selected' : ''} onClick={() => { setTab(n); setDrawer(false); setSettingsOpen(false) }}>
+              <button key={n} className={tab === n ? 'selected' : ''} onClick={() => {
+                setTab(n)
+                if (n === 'AI Study Assistant') setChatSessionKey(key => key + 1)
+                if (n === 'Assessments') {
+                  setAppAlert(null)
+                  const pendingId = Number(localStorage.remindPendingAssessmentId)
+                  if (Number.isInteger(pendingId) && pendingId > 0) setAssessmentToOpenId(pendingId)
+                }
+                if (n !== 'Assessments') setAssessmentToOpenId(null)
+                setDrawer(false)
+                setSettingsOpen(false)
+              }}>
                 <I size={18} />
                 <span>{n}</span>
                 {n === 'Revision Center' && data.recommendations.length > 0 ? <em>{data.recommendations.length}</em> : null}
@@ -368,6 +410,9 @@ function App() {
             <h2>{tab === 'Overview' ? 'A gentler way to keep up.' : tab}</h2>
           </div>
           <div className="header-actions">
+            <button className="assistant-header-btn" onClick={openFreshAssistant} title="Open AI Study Assistant">
+              <MessageCircle size={17} /> <span>AI Assistant</span>
+            </button>
             <button className="upload" onClick={() => file.current?.click()}><Plus size={17} />Add material</button>
           </div>
           <input ref={file} onChange={upload} type="file" accept=".pdf,.docx,.txt,.md" hidden />
@@ -386,12 +431,47 @@ function App() {
           <LibraryPage {...shared} />
         ) : tab === 'Knowledge Map' ? (
           <GraphPage {...shared} />
+        ) : tab === 'AI Study Assistant' ? (
+          <ChatPage key={chatSessionKey} token={token} headers={headers} onAlert={alert => setAppAlert(alert)} onOpenAssistant={openFreshAssistant} />
         ) : tab === 'Assessments' ? (
-          <AssessmentsPage {...shared} initialConceptId={selectedConceptId} />
+          <AssessmentsPage
+            {...shared}
+            initialConceptId={selectedConceptId}
+            onAssessmentGenerated={(assessmentId) => {
+              localStorage.remindPendingAssessmentId = String(assessmentId)
+              const backgrounded = document.hidden
+              if (tab === 'Assessments' && !backgrounded) {
+                setAppAlert(null)
+                return
+              }
+              if (backgrounded && 'Notification' in window && Notification.permission === 'granted') {
+                new Notification('Assessment ready', { body: 'Your questions are ready to answer in ReMind.' })
+              }
+              setAppAlert({
+                title: 'Assessment ready',
+                message: 'Your assessment was generated successfully. Open the assessment section to start answering.',
+                tone: 'success',
+                confirmLabel: 'Open assessment',
+                onConfirm: () => {
+                  setAppAlert(null)
+                  setAssessmentToOpenId(assessmentId)
+                  localStorage.removeItem('remindPendingAssessmentId')
+                  setTab('Assessments')
+                  setDrawer(false)
+                }
+              })
+            }}
+            onCloseAssessment={() => setAssessmentToOpenId(null)}
+            assessmentToOpenId={assessmentToOpenId}
+          />
         ) : tab === 'Revision Center' ? (
-          <RevisionCenterPage {...shared} onStartAssessment={startAssessmentForConcept} />
+          <RevisionCenterPage
+            {...shared}
+            onStartAssessment={startAssessmentForConcept}
+            onNotify={(title, message, tone) => setAppAlert({ title, message, tone })}
+          />
         ) : tab === 'Analytics' ? (
-          <AnalyticsPage {...shared} />
+          <AnalyticsPage {...shared} onNotify={(title, message, tone) => setAppAlert({ title, message, tone })} />
         ) : (
           <Empty tab={tab} upload={() => file.current?.click()} />
         )}
@@ -407,7 +487,11 @@ function App() {
         initialTab={profileModalTab}
         dashboardData={data}
         onSignOut={handleSignOut}
-        onNavigateTab={t => { setTab(t); setDrawer(false); }}
+        onNavigateTab={t => {
+          setTab(t)
+          if (t !== 'Assessments') setAssessmentToOpenId(null)
+          setDrawer(false)
+        }}
       />
       {appAlert && (
         <AppAlert
@@ -437,7 +521,7 @@ function AppAlert({
 
   const confirm = () => {
     if (onConfirm) onConfirm()
-    else onClose()
+    onClose()
   }
 
   return (
@@ -461,7 +545,11 @@ function AppAlert({
         <div className="app-alert-actions">
           {tone === 'confirm' && <button className="light-btn" onClick={onClose}>Not now</button>}
           {tone === 'confirm' && <button className="dark-btn" onClick={confirm}>{confirmLabel}</button>}
-          {tone !== 'confirm' && tone !== 'info' && <button className="dark-btn" onClick={onClose}>Done</button>}
+          {tone !== 'confirm' && tone !== 'info' && (
+            <button className="dark-btn" onClick={onConfirm ? confirm : onClose}>
+              {onConfirm ? <>{confirmLabel} <ChevronRight size={15} /></> : 'Done'}
+            </button>
+          )}
         </div>
       </section>
     </div>
@@ -1059,6 +1147,303 @@ function LoginPage({ authenticate }: { authenticate: (email: string, password: s
   )
 }
 
+type ChatConversation = { id: number; title: string; provider_preference: string; model_preference: string; updated_at: string }
+type OllamaModel = { id: string; label: string; installed: boolean }
+type ChatMessage = { id: number; role: 'user' | 'assistant'; content: string; provider_used?: string | null; model_used?: string | null }
+
+function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
+  token: string
+  headers: () => Record<string, string>
+  onAlert: (alert: AppAlertState) => void
+  onOpenAssistant: () => void
+}) {
+  const [conversations, setConversations] = useState<ChatConversation[]>([])
+  const [active, setActive] = useState<ChatConversation | null>(null)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [draft, setDraft] = useState('')
+  const [providerMode, setProviderMode] = useState('auto')
+  const [ollamaModel, setOllamaModel] = useState('qwen2.5:3b')
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [ollamaAvailable, setOllamaAvailable] = useState(true)
+  const [useMaterials, setUseMaterials] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [retryable, setRetryable] = useState<{ conversationId: number; content: string; messageId: number } | null>(null)
+  const [copiedMessageId, setCopiedMessageId] = useState<number | null>(null)
+  const [openConversationMenu, setOpenConversationMenu] = useState<number | null>(null)
+  const [renamingConversationId, setRenamingConversationId] = useState<number | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const messagesRef = useRef<HTMLDivElement>(null)
+
+  const loadConversations = async () => {
+    const response = await fetch(API + '/chat/conversations', { headers: headers() })
+    if (!response.ok) throw new Error('Could not load conversations.')
+    const items = await response.json() as ChatConversation[]
+    setConversations(items)
+  }
+  const openConversation = async (conversation: ChatConversation) => {
+    const response = await fetch(API + `/chat/conversations/${conversation.id}`, { headers: headers() })
+    if (!response.ok) throw new Error('Could not load this conversation.')
+    const body = await response.json()
+    setActive(body.conversation)
+    setMessages(body.messages)
+    setProviderMode(body.conversation.provider_preference)
+    setOllamaModel(body.conversation.model_preference || 'qwen2.5:3b')
+    setRetryable(null)
+    setCopiedMessageId(null)
+    setError('')
+  }
+  useEffect(() => {
+    loadConversations().catch(error => setError(error instanceof Error ? error.message : 'Could not load conversations.'))
+  }, [])
+  const loadOllamaModels = async () => {
+    try {
+      const response = await fetch(API + '/chat/providers', { headers: headers() })
+      if (!response.ok) return
+      const body = await response.json()
+      const ollama = body.providers?.find((item: { id: string }) => item.id === 'ollama')
+      setOllamaModels(ollama?.models || [])
+      setOllamaAvailable(Boolean(ollama?.available))
+    } catch {
+      setOllamaAvailable(false)
+    }
+  }
+  useEffect(() => { void loadOllamaModels() }, [])
+  useEffect(() => {
+    if (openConversationMenu === null) return
+    const closeMenu = (event: MouseEvent) => {
+      const target = event.target as Element
+      if (!target.closest('.chat-conversation-menu-wrap')) setOpenConversationMenu(null)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenConversationMenu(null)
+    }
+    document.addEventListener('mousedown', closeMenu)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('mousedown', closeMenu)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [openConversationMenu])
+  useEffect(() => {
+    const container = messagesRef.current
+    if (container) container.scrollTop = container.scrollHeight
+  }, [messages, busy])
+  const newChat = async () => {
+    const response = await fetch(API + '/chat/conversations', {
+      method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider_preference: providerMode, model_preference: ollamaModel }),
+    })
+    if (!response.ok) throw new Error('Could not create a conversation.')
+    const conversation = await response.json() as ChatConversation
+    setConversations(items => [conversation, ...items])
+    setActive(conversation); setMessages([]); setRetryable(null); setError('')
+    setCopiedMessageId(null)
+  }
+  const removeChat = async (conversation: ChatConversation) => {
+    setOpenConversationMenu(null)
+    onAlert({
+      title: 'Delete conversation?',
+      message: 'This will permanently remove the conversation and all of its messages.',
+      tone: 'confirm',
+      confirmLabel: 'Delete conversation',
+      onConfirm: async () => {
+        const response = await fetch(API + `/chat/conversations/${conversation.id}`, { method: 'DELETE', headers: headers() })
+        if (!response.ok) { setError('Could not delete the conversation.'); return }
+        const remaining = conversations.filter(item => item.id !== conversation.id)
+        setConversations(remaining)
+        if (active?.id === conversation.id) {
+          setActive(null); setMessages([])
+          if (remaining[0]) await openConversation(remaining[0])
+        }
+      }
+    })
+  }
+  const beginRename = (conversation: ChatConversation) => {
+    setOpenConversationMenu(null)
+    setRenamingConversationId(conversation.id)
+    setRenameDraft(conversation.title)
+  }
+  const renameChat = async (conversation: ChatConversation) => {
+    const title = renameDraft.trim()
+    if (!title) {
+      setError('Enter a name for this chat.')
+      return
+    }
+    try {
+      const response = await fetch(API + `/chat/conversations/${conversation.id}`, {
+        method: 'PATCH',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.detail || 'Could not rename the conversation.')
+      setConversations(items => items.map(item => item.id === conversation.id ? body : item))
+      if (active?.id === conversation.id) setActive(body)
+      setRenamingConversationId(null)
+      setRenameDraft('')
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : 'Could not rename the conversation.')
+    }
+  }
+  const findLastUserMessage = async (conversationId: number) => {
+    const response = await fetch(API + `/chat/conversations/${conversationId}`, { headers: headers() })
+    if (!response.ok) return null
+    const history = await response.json()
+    return [...history.messages].reverse().find((message: ChatMessage) => message.role === 'user') as ChatMessage | undefined
+  }
+  const send = async (retryMessage?: { conversationId: number; content: string; messageId: number }) => {
+    const content = (retryMessage?.content || draft).trim()
+    if (!content || busy) return
+    let conversation = retryMessage
+      ? conversations.find(item => item.id === retryMessage.conversationId) || active
+      : active || conversations[0]
+    if (!conversation) {
+      const response = await fetch(API + '/chat/conversations', {
+        method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_preference: providerMode, model_preference: ollamaModel }),
+      })
+      if (!response.ok) { setError('Could not create a conversation.'); return }
+      conversation = await response.json() as ChatConversation
+      setActive(conversation); setConversations([conversation])
+    }
+    if (!conversation) return
+    setBusy(true); setError(''); setDraft('')
+    if (!retryMessage) setMessages(items => [...items, { id: Date.now(), role: 'user', content }])
+    try {
+      const response = await fetch(API + `/chat/conversations/${conversation.id}/messages`, {
+        method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content, provider: providerMode, model: ollamaModel, use_materials: useMaterials,
+          retry_message_id: retryMessage?.messageId,
+        }),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.detail || 'The assistant could not generate a response.')
+      if (!retryMessage && body.user_message_id) {
+        setMessages(items => {
+          const lastUser = [...items].reverse().find(item => item.role === 'user' && item.content === content)
+          return items.map(message => message.id === lastUser?.id ? { ...message, id: body.user_message_id } : message)
+        })
+      }
+      setMessages(items => [...items, body.message])
+      setActive(body.conversation)
+      setConversations(items => [body.conversation, ...items.filter(item => item.id !== body.conversation.id)])
+      setRetryable(null)
+      if (document.hidden) {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification('Assistant response ready', { body: 'Your ReMind study assistant has finished responding.' })
+        }
+        onAlert({
+          title: 'Assistant response ready',
+          message: 'Your study assistant has finished responding. Open the assistant to continue learning.',
+          tone: 'success',
+          confirmLabel: 'Open assistant',
+          onConfirm: onOpenAssistant,
+        })
+      }
+    } catch (sendError) {
+      setError(sendError instanceof Error ? sendError.message : 'The assistant could not generate a response.')
+      try {
+        const historyResponse = await fetch(API + `/chat/conversations/${conversation.id}`, { headers: headers() })
+        if (historyResponse.ok) {
+          const history = await historyResponse.json()
+          const lastUserMessage = [...history.messages].reverse().find((message: ChatMessage) => message.role === 'user')
+          if (lastUserMessage) setRetryable({ conversationId: conversation.id, content: lastUserMessage.content, messageId: lastUserMessage.id })
+        }
+      } catch { /* Preserve the original generation error if history cannot be refreshed. */ }
+    } finally { setBusy(false) }
+  }
+  const renderMessage = (message: ChatMessage) => {
+    const parts = message.content.split(/```([\s\S]*?)```/g)
+    return parts.map((part, index) => index % 2 === 1
+      ? <pre key={index}><code>{part.replace(/^[a-z]+\n/i, '')}</code><button className="chat-copy" onClick={() => navigator.clipboard.writeText(part)} title="Copy code"><Copy size={14} /></button></pre>
+      : <span key={index}>{part.split(/(\*\*[^*]+\*\*)/g).map((text, partIndex) => text.startsWith('**') ? <strong key={partIndex}>{text.slice(2, -2)}</strong> : text)}</span>)
+  }
+  const copyResponse = async (message: ChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(message.content)
+      setCopiedMessageId(message.id)
+      window.setTimeout(() => setCopiedMessageId(current => current === message.id ? null : current), 1800)
+    } catch {
+      onAlert({ title: 'Copy failed', message: 'The response could not be copied to your clipboard. Please try again.', tone: 'error' })
+    }
+  }
+  return <section className="chat-layout">
+    <aside className="chat-sidebar">
+      <button className="dark-btn" onClick={() => newChat().catch(error => setError(error.message))}><Plus size={16} /> New chat</button>
+      <div className="chat-conversation-list">{conversations.map(conversation =>
+        <div className={`chat-conversation ${active?.id === conversation.id ? 'active' : ''}`} key={conversation.id}>
+          {renamingConversationId === conversation.id
+            ? <div className="chat-rename-editor">
+                <input value={renameDraft} onChange={event => setRenameDraft(event.target.value)} onKeyDown={event => {
+                  if (event.key === 'Enter') { event.preventDefault(); void renameChat(conversation) }
+                  if (event.key === 'Escape') { setRenamingConversationId(null); setRenameDraft('') }
+                }} autoFocus aria-label="Chat name" maxLength={160} />
+                <div className="chat-rename-actions">
+                  <button type="button" onClick={() => { void renameChat(conversation) }}>Save</button>
+                  <button type="button" onClick={() => { setRenamingConversationId(null); setRenameDraft('') }}>Cancel</button>
+                </div>
+              </div>
+            : <>
+                <button className="chat-conversation-title" onClick={() => openConversation(conversation).catch(error => setError(error.message))}>{conversation.title}</button>
+                <div className="chat-conversation-menu-wrap">
+                  <button className="chat-menu-button" onClick={() => setOpenConversationMenu(current => current === conversation.id ? null : conversation.id)} aria-label={`Options for ${conversation.title}`} aria-expanded={openConversationMenu === conversation.id}><MoreHorizontal size={16} /></button>
+                  {openConversationMenu === conversation.id && <div className="chat-conversation-menu">
+                    <button onClick={() => beginRename(conversation)}><Pencil size={14} /> Rename</button>
+                    <button className="danger" onClick={() => { void removeChat(conversation) }}><Trash2 size={14} /> Delete</button>
+                  </div>}
+                </div>
+              </>}
+        </div>)}</div>
+    </aside>
+    <div className="chat-main">
+      <div className="chat-messages" ref={messagesRef}>
+        {!messages.length && <div className="chat-empty"><Sparkles size={28} /><h3>What would you like to learn?</h3><p>Ask a question, request an explanation, or start a quiz.</p><div className="chat-prompts">{['Explain DBMS in simple terms.', 'Teach me the four OOP principles.', 'Summarize a topic for revision.'].map(prompt => <button key={prompt} onClick={() => setDraft(prompt)}>{prompt}</button>)}</div></div>}
+        {messages.map((message, index) => {
+          const isLatestAssistant = message.role === 'assistant' && !messages.slice(index + 1).some(item => item.role === 'assistant')
+          const previousUser = [...messages.slice(0, index)].reverse().find(item => item.role === 'user')
+          return <div className={`chat-bubble ${message.role}`} key={message.id}>
+            <div className="chat-content">{renderMessage(message)}</div>
+            {isLatestAssistant && message.role === 'assistant' && <div className="chat-actions">
+              <button className="chat-retry-action chat-copy-response" onClick={() => { void copyResponse(message) }} title="Copy complete response" aria-label="Copy complete response">
+                {copiedMessageId === message.id ? <CheckCircle2 size={13} /> : <Copy size={13} />}
+                {copiedMessageId === message.id ? 'Copied' : 'Copy'}
+              </button>
+              {previousUser && <button className="chat-retry-action" onClick={() => { void send({ conversationId: active?.id || 0, content: previousUser.content, messageId: previousUser.id }) }} disabled={busy}><RotateCw size={13} /> Retry response</button>}
+            </div>}
+          </div>
+        })}
+        {busy && <div className="chat-bubble assistant chat-thinking"><div className="chat-thinking-status"><Sparkles size={15} /><span>Preparing your answer</span><i className="thinking-dots"><b></b><b></b><b></b></i></div></div>}
+      </div>
+      {error && <div className="chat-error notice"><span>{error}</span>{retryable && <button className="light-btn chat-retry-btn" onClick={() => { void send(retryable) }} disabled={busy}><RotateCw size={14} /> Try again</button>}</div>}
+      <div className="chat-composer">
+        <div className="chat-input-wrap">
+          <textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder="Ask your study assistant..." rows={2} />
+          <button className="chat-send-btn" onClick={() => { void send() }} disabled={busy || !draft.trim()} aria-label="Send message" title="Send message"><ArrowUp size={19} strokeWidth={2.5} /></button>
+        </div>
+        <div className="chat-composer-tools">
+          <label className="chat-tool-select">Provider
+            <select value={providerMode} onChange={event => setProviderMode(event.target.value)} aria-label="AI provider">
+              <option value="auto">Automatic</option>
+              <option value="ollama">Ollama (local)</option>
+              <option value="gemini">Gemini (cloud)</option>
+            </select>
+          </label>
+          {providerMode === 'ollama' && <label className="chat-tool-select">Local model
+            {ollamaModel === 'qwen2.5:3b' && <span className="preferred-model-badge" title="Recommended for concise study answers"><Sparkles size={12} /> Preferred</span>}
+            <select value={ollamaModel} onChange={event => setOllamaModel(event.target.value)} aria-label="Ollama model" disabled={!ollamaAvailable}>
+              {ollamaModels.length ? ollamaModels.map(model => <option key={model.id} value={model.id} disabled={!model.installed}>{model.label}{model.installed ? '' : ' (not installed)'}</option>) : <option value={ollamaModel}>{ollamaAvailable ? 'Loading models…' : 'Ollama unavailable'}</option>}
+            </select>
+            <button className="chat-refresh-models" type="button" onClick={() => { void loadOllamaModels() }} title="Refresh Ollama model availability" aria-label="Refresh Ollama model availability"><RotateCw size={13} /></button>
+          </label>}
+          <label className="chat-tool-toggle"><input type="checkbox" checked={useMaterials} onChange={event => setUseMaterials(event.target.checked)} /> <span>Use uploaded materials</span></label>
+        </div>
+      </div>
+    </div>
+  </section>
+}
+
 function LibraryPage({ headers, refresh, documentsRefreshKey }: { headers: () => Record<string, string>, refresh: () => Promise<void>, documentsRefreshKey: number }) {
   const [docs, setDocs] = useState<any[]>([])
   const [message, setMessage] = useState('')
@@ -1165,7 +1550,7 @@ function LibraryPage({ headers, refresh, documentsRefreshKey }: { headers: () =>
 }
 
 function GraphPage({ headers }: { headers: () => Record<string, string> }) {
-  const [graph, setGraph] = useState<{ nodes: any[], edges: any[] }>({ nodes: [], edges: [] })
+  const [graph, setGraph] = useState<{ nodes: any[], edges: any[], relationship_count?: number, insights?: any }>({ nodes: [], edges: [] })
   useEffect(() => {
     fetch(API + '/knowledge-graph', { headers: headers() }).then(r => r.ok ? r.json() : null).then(x => x && setGraph(x))
   }, [])
@@ -1175,18 +1560,42 @@ function GraphPage({ headers }: { headers: () => Record<string, string> }) {
       <p className="eyebrow">SOURCE-GROUNDED STRUCTURE</p>
       <h3>Knowledge map</h3>
       {graph.nodes.length ? <>
+        {graph.insights && (
+          <>
+            <div className="knowledge-insight-grid">
+              <div><span>Concept coverage</span><strong>{graph.insights.coverage_percent}%</strong><small>{graph.insights.assessed_count} of {graph.insights.concept_count} assessed</small></div>
+              <div><span>Average recall</span><strong>{graph.insights.average_accuracy !== null ? `${graph.insights.average_accuracy}%` : '—'}</strong><small>Across assessed concepts</small></div>
+              <div><span>High-risk concepts</span><strong>{graph.insights.high_risk_count}</strong><small>Need timely review</small></div>
+              <div><span>Assessments completed</span><strong>{graph.insights.completed_assessments}</strong><small>{graph.insights.document_count} source{graph.insights.document_count === 1 ? '' : 's'}</small></div>
+            </div>
+            <div className="knowledge-insight-panels">
+              <div className="knowledge-insight-panel">
+                <div className="knowledge-insight-heading"><b>Strongest recall</b><span>accuracy</span></div>
+                {graph.insights.strongest.length ? graph.insights.strongest.map((node: any) => (
+                  <div className="knowledge-ranking" key={node.id}><span>{node.label}</span><strong>{node.accuracy}%</strong></div>
+                )) : <p className="fine">Complete an assessment to build a recall baseline.</p>}
+              </div>
+              <div className="knowledge-insight-panel">
+                <div className="knowledge-insight-heading"><b>Needs attention</b><span>priority</span></div>
+                {graph.insights.needs_attention.length ? graph.insights.needs_attention.map((node: any) => (
+                  <div className="knowledge-ranking" key={node.id}><span>{node.label}</span><strong className={node.risk === null ? 'unassessed' : ''}>{node.risk === null ? 'New' : `${node.risk}% risk`}</strong></div>
+                )) : <p className="fine">Your knowledge map is in good shape.</p>}
+              </div>
+            </div>
+          </>
+        )}
         <div className="graph-list">
           {graph.nodes.map(n => (
             <article key={n.id}>
               <span className={n.assessed ? 'node assessed' : 'node'}></span>
               <div>
                 <b>{n.label}</b>
-                <p>{n.topic} · {n.assessed ? `risk ${n.risk ?? 'unknown'}%` : 'Not assessed'}</p>
+                <p>{n.topic} · {n.assessed ? `${n.accuracy}% recall · ${n.attempts} attempt${n.attempts === 1 ? '' : 's'}` : 'Not assessed'}</p>
               </div>
             </article>
           ))}
         </div>
-        <p className="fine">{graph.edges.length} evidence-backed relationship{graph.edges.length === 1 ? '' : 's'} stored.</p>
+        <p className="fine">{graph.relationship_count ?? graph.edges.length} evidence-backed relationship{(graph.relationship_count ?? graph.edges.length) === 1 ? '' : 's'} stored.</p>
       </> : (
         <div className="empty">
           <b>No concepts to map</b>
@@ -1197,11 +1606,66 @@ function GraphPage({ headers }: { headers: () => Record<string, string> }) {
   )
 }
 
-function AnalyticsPage({ headers }: { headers: () => Record<string, string> }) {
+function AnalyticsPage({
+  headers,
+  refresh,
+  onNotify
+}: {
+  headers: () => Record<string, string>,
+  refresh: () => Promise<void>,
+  onNotify: (title: string, message: string, tone: 'success' | 'error') => void
+}) {
   const [stats, setStats] = useState<any>()
-  useEffect(() => {
-    fetch(API + '/analytics', { headers: headers() }).then(r => r.ok ? r.json() : null).then(setStats)
-  }, [])
+  const [selectedAssessments, setSelectedAssessments] = useState<number[]>([])
+  const [sortMode, setSortMode] = useState<'newest' | 'oldest' | 'highest' | 'lowest'>('newest')
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [notification, setNotification] = useState<{ title: string; message: string; tone: 'success' | 'error' } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const load = () => fetch(API + '/analytics', { headers: headers() }).then(r => r.ok ? r.json() : null).then(data => {
+    if (data) {
+      setStats(data)
+      setSelectedAssessments(current => current.filter(id => data.assessments.some((item: any) => item.id === id)))
+    }
+  })
+  useEffect(() => { void load() }, [])
+  const assessments = [...(stats?.assessments || [])].sort((a, b) => {
+    if (sortMode === 'highest') return (b.score / Math.max(b.max_score, 1)) - (a.score / Math.max(a.max_score, 1))
+    if (sortMode === 'lowest') return (a.score / Math.max(a.max_score, 1)) - (b.score / Math.max(b.max_score, 1))
+    const direction = sortMode === 'newest' ? -1 : 1
+    return direction * (new Date(a.at).getTime() - new Date(b.at).getTime())
+  })
+  const allSelected = assessments.length > 0 && assessments.every((assessment: any) => selectedAssessments.includes(assessment.id))
+  const toggleAssessment = (id: number) => setSelectedAssessments(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+  const deleteSelected = async () => {
+    setBusy(true)
+    try {
+      const response = await fetch(API + '/analytics/assessments', {
+        method: 'DELETE',
+        headers: { ...headers(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assessment_ids: selectedAssessments })
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(body.detail || 'Selected assessments could not be deleted.')
+      setDeleteConfirm(false)
+      setSelectedAssessments([])
+      await load()
+      await refresh()
+      onNotify(
+        'Assessments deleted',
+        `${body.deleted_count || selectedAssessments.length} assessment record${(body.deleted_count || selectedAssessments.length) === 1 ? '' : 's'} removed successfully.`,
+        'success'
+      )
+    } catch (error) {
+      setDeleteConfirm(false)
+      setNotification({
+        title: 'Deletion failed',
+        message: error instanceof Error ? error.message : 'Selected assessments could not be deleted.',
+        tone: 'error'
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <section className="panel data-page">
@@ -1216,11 +1680,34 @@ function AnalyticsPage({ headers }: { headers: () => Record<string, string> }) {
           </div>
           {stats.assessments && stats.assessments.length > 0 && (
             <div style={{ marginTop: 24 }}>
-              <p className="eyebrow">ASSESSMENT ATTEMPTS LOG</p>
+              <div className="analytics-log-head">
+                <p className="eyebrow">ASSESSMENT ATTEMPTS LOG</p>
+                <div className="analytics-log-actions">
+                  <label className="revision-filter">
+                    <span>Sort</span>
+                    <select value={sortMode} onChange={event => setSortMode(event.target.value as typeof sortMode)}>
+                      <option value="newest">Newest</option>
+                      <option value="oldest">Oldest</option>
+                      <option value="highest">Highest score</option>
+                      <option value="lowest">Lowest score</option>
+                    </select>
+                  </label>
+                  <button className="danger-btn" disabled={!selectedAssessments.length || busy} onClick={() => setDeleteConfirm(true)}>
+                    Delete selected{selectedAssessments.length ? ` (${selectedAssessments.length})` : ''}
+                  </button>
+                </div>
+              </div>
               <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
-                {stats.assessments.map((assessment: any, i: number) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: '#fafcfa', border: '1px solid #edf0eb', borderRadius: 8, fontSize: 12 }}>
-                    <span>Assessment #{i + 1} · {new Date(assessment.at).toLocaleString()}</span>
+                <label className="analytics-select-all">
+                  <input type="checkbox" checked={allSelected} onChange={() => setSelectedAssessments(allSelected ? [] : assessments.map((assessment: any) => assessment.id))} />
+                  <span>Select all visible assessments</span>
+                </label>
+                {assessments.map((assessment: any, i: number) => (
+                  <div key={i} className="theme-surface" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', borderRadius: 8, fontSize: 12 }}>
+                    <label className="analytics-attempt-row">
+                      <input type="checkbox" checked={selectedAssessments.includes(assessment.id)} onChange={() => toggleAssessment(assessment.id)} />
+                      <span>{assessment.title || `Assessment ${i + 1}`} · {new Date(assessment.at).toLocaleString()}</span>
+                    </label>
                     <span className={`badge ${assessment.score === assessment.max_score ? 'completed' : 'snoozed'}`}>
                       {assessment.score}/{assessment.max_score} correct
                     </span>
@@ -1228,6 +1715,24 @@ function AnalyticsPage({ headers }: { headers: () => Record<string, string> }) {
                 ))}
               </div>
             </div>
+          )}
+          {deleteConfirm && (
+            <AppAlert
+              title="Delete selected assessments?"
+              message={`This will permanently remove ${selectedAssessments.length} assessment record${selectedAssessments.length === 1 ? '' : 's'}, its questions, and its answer history.`}
+              tone="confirm"
+              confirmLabel="Delete permanently"
+              onClose={() => setDeleteConfirm(false)}
+              onConfirm={() => void deleteSelected()}
+            />
+          )}
+          {notification && (
+            <AppAlert
+              title={notification.title}
+              message={notification.message}
+              tone={notification.tone}
+              onClose={() => setNotification(null)}
+            />
           )}
         </>
       ) : (
@@ -1240,15 +1745,17 @@ function AnalyticsPage({ headers }: { headers: () => Record<string, string> }) {
 function RevisionCenterPage({
   headers,
   refresh,
-  onStartAssessment
+  onStartAssessment,
+  onNotify
 }: {
   headers: () => Record<string, string>,
   refresh: () => Promise<void>,
-  onStartAssessment: (id: number) => void
+  onStartAssessment: (id: number) => void,
+  onNotify: (title: string, message: string, tone: 'success' | 'error') => void
 }) {
   const [revisions, setRevisions] = useState<any[]>([])
   const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'completed'>('all')
 
   const load = async () => {
     try {
@@ -1274,19 +1781,27 @@ function RevisionCenterPage({
 
   const recalculate = async () => {
     setBusy(true)
-    setMsg('Recalculating revision queue…')
     try {
       const r = await fetch(API + '/revisions/rebuild', { method: 'POST', headers: headers() })
-      const data = await r.json()
-      setMsg(data.message || 'Revision recommendations updated.')
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        onNotify('Revision queue update failed', data.detail || 'Revision recommendations could not be recalculated. Please try again.', 'error')
+        return
+      }
+      onNotify('Revision queue updated', data.message || 'Your revision recommendations are up to date.', 'success')
       await load()
       await refresh()
     } catch {
-      setMsg('Failed to recalculate.')
+      onNotify('Revision queue update failed', 'Could not connect to update revision recommendations. Please try again.', 'error')
     } finally {
       setBusy(false)
     }
   }
+
+  const visibleRevisions = revisions.filter(revision =>
+    statusFilter === 'all'
+      || (statusFilter === 'completed' ? revision.status === 'completed' : revision.status !== 'completed')
+  )
 
   return (
     <section className="panel data-page">
@@ -1295,13 +1810,26 @@ function RevisionCenterPage({
           <p className="eyebrow">TARGETED RETENTION</p>
           <h3>Revision Center</h3>
         </div>
-        <button onClick={recalculate} disabled={busy}>
-          {busy ? <><RotateCw size={13} className="spin" /> Recalculating…</> : 'Recalculate queue'}
-        </button>
+        <div className="revision-toolbar">
+          <label className="revision-filter">
+            <span>Show</span>
+            <select
+              value={statusFilter}
+              onChange={event => setStatusFilter(event.target.value as 'all' | 'open' | 'completed')}
+              aria-label="Filter revision topics by status"
+            >
+              <option value="all">All topics</option>
+              <option value="open">Open topics</option>
+              <option value="completed">Completed topics</option>
+            </select>
+          </label>
+          <button onClick={recalculate} disabled={busy}>
+            {busy ? <><RotateCw size={13} className="spin" /> Recalculating…</> : 'Recalculate queue'}
+          </button>
+        </div>
       </div>
-      {msg && <p className="notice">{msg}</p>}
-      {revisions.length ? (
-        revisions.map(r => (
+      {visibleRevisions.length ? (
+        visibleRevisions.map(r => (
           <article key={r.id} className="data-row">
             <div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1321,8 +1849,12 @@ function RevisionCenterPage({
       ) : (
         <div className="empty">
           <span><Clock3 size={23} /></span>
-          <b>Revision queue is clear</b>
-          <p>No revision items currently scheduled. Click "Recalculate queue" or upload study materials to start.</p>
+          <b>{revisions.length ? 'No matching topics' : 'Revision queue is clear'}</b>
+          <p>
+            {revisions.length
+              ? `There are no ${statusFilter === 'completed' ? 'completed' : 'open'} topics to show.`
+              : 'No revision items currently scheduled. Click "Recalculate queue" or upload study materials to start.'}
+          </p>
         </div>
       )}
     </section>
@@ -1332,11 +1864,17 @@ function RevisionCenterPage({
 function AssessmentsPage({
   headers,
   refresh,
-  initialConceptId
+  initialConceptId,
+  onAssessmentGenerated,
+  onCloseAssessment,
+  assessmentToOpenId
 }: {
   headers: () => Record<string, string>,
   refresh: () => Promise<void>,
-  initialConceptId?: number | null
+  initialConceptId?: number | null,
+  onAssessmentGenerated: (assessmentId: number) => void,
+  onCloseAssessment: () => void,
+  assessmentToOpenId?: number | null
 }) {
   const [concepts, setConcepts] = useState<any[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(initialConceptId || null)
@@ -1345,6 +1883,12 @@ function AssessmentsPage({
   const [results, setResults] = useState<Record<number, any>>({})
   const [questionCount, setQuestionCount] = useState(10)
   const [questionTypes, setQuestionTypes] = useState<Array<'multiple_choice' | 'true_false'>>(['multiple_choice'])
+  const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'ollama'>(
+    (localStorage.remindProviderMode || 'auto') as 'auto' | 'gemini' | 'ollama'
+  )
+  const [ollamaModel, setOllamaModel] = useState(localStorage.remindAssessmentModel || 'qwen2.5:3b')
+  const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [ollamaAvailable, setOllamaAvailable] = useState(true)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
@@ -1359,10 +1903,49 @@ function AssessmentsPage({
         if (!selectedId && list.length > 0) setSelectedId(list[0].id)
       })
   }, [])
+  useEffect(() => {
+    fetch(API + '/chat/providers', { headers: headers() })
+      .then(response => response.ok ? response.json() : null)
+      .then(body => {
+        const ollama = body?.providers?.find((item: { id: string }) => item.id === 'ollama')
+        setOllamaModels(ollama?.models || [])
+        setOllamaAvailable(Boolean(ollama?.available))
+      })
+      .catch(() => setOllamaAvailable(false))
+  }, [])
 
   useEffect(() => {
-    if (initialConceptId) setSelectedId(initialConceptId)
+    if (initialConceptId) {
+      setSelectedId(initialConceptId)
+      setAssessment(null)
+      setResponses({})
+      setResults({})
+    }
   }, [initialConceptId])
+
+  useEffect(() => {
+    if (!assessmentToOpenId) return
+    let cancelled = false
+    fetch(`${API}/assessments/${assessmentToOpenId}`, { headers: headers() })
+      .then(async response => {
+        if (!response.ok) throw new Error('The generated assessment could not be loaded.')
+        return response.json()
+      })
+      .then(detail => {
+        if (!cancelled) {
+          if (Number.isInteger(detail.concept_id)) setSelectedId(detail.concept_id)
+          setAssessment(detail)
+          setResponses({})
+          setResults({})
+          setMessage('')
+          localStorage.removeItem('remindPendingAssessmentId')
+        }
+      })
+      .catch(error => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : 'The generated assessment could not be loaded.')
+      })
+    return () => { cancelled = true }
+  }, [assessmentToOpenId])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1385,7 +1968,12 @@ function AssessmentsPage({
   const generateAssessment = async () => {
     if (!selectedId) return
     setLoading(true)
-    setMessage('Generating questions with local Ollama…')
+    localStorage.remindProviderMode = providerMode
+    setMessage(providerMode === 'gemini'
+      ? 'Generating questions with Gemini…'
+      : providerMode === 'ollama'
+        ? 'Generating questions locally with Ollama…'
+        : 'Generating questions with automatic provider selection…')
     setAssessment(null)
     setResponses({})
     setResults({})
@@ -1394,14 +1982,25 @@ function AssessmentsPage({
       const r = await fetch(API + '/assessments', {
         method: 'POST',
         headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ concept_id: selectedId, question_count: questionCount, question_types: questionTypes, difficulty: 'medium' })
+        body: JSON.stringify({ concept_id: selectedId, question_count: questionCount, question_types: questionTypes, difficulty: 'medium', provider_mode: providerMode, model: providerMode === 'ollama' ? ollamaModel : undefined })
       })
       const data = await r.json()
       if (r.ok) {
         const detailRes = await fetch(`${API}/assessments/${data.id}`, { headers: headers() })
-        if (detailRes.ok) setAssessment(await detailRes.json())
-        else setAssessment(data)
-        setMessage(data.message || '')
+        if (!detailRes.ok) {
+          setMessage('Assessment was created, but its questions could not be loaded. Please open Assessments again.')
+          return
+        }
+        const detail = await detailRes.json()
+        if (!Array.isArray(detail.questions) || detail.questions.length === 0) {
+          setMessage('Assessment was created, but no questions were returned. Please retry generation.')
+          return
+        }
+        setAssessment(detail)
+        setMessage(data.message || (data.ai_fallback_used
+          ? 'Gemini was unavailable, so this assessment was generated locally with Ollama.'
+          : ''))
+        onAssessmentGenerated(data.id)
       } else {
         const detail = data.detail || ''
         setMessage(detail.includes('invalid structured output')
@@ -1409,14 +2008,19 @@ function AssessmentsPage({
           : detail || 'Failed to generate questions. Ensure Ollama is running.')
       }
     } catch {
-      setMessage('Network error communicating with Ollama service.')
+      setMessage('Network error communicating with the selected AI provider.')
     } finally {
       setLoading(false)
     }
   }
 
   const submitAssessment = async () => {
-    if (!assessment || Object.keys(responses).length !== assessment.questions.length) {
+    const questionIds = assessment?.questions?.map((question: any) => String(question.id)) || []
+    const answeredIds = Object.keys(responses)
+    const allQuestionsAnswered = questionIds.length > 0
+      && questionIds.length === answeredIds.length
+      && questionIds.every((id: string) => Object.prototype.hasOwnProperty.call(responses, id))
+    if (!assessment || !allQuestionsAnswered) {
       setMessage('Please answer every question before submitting the assessment.')
       return
     }
@@ -1442,6 +2046,14 @@ function AssessmentsPage({
     }
   }
 
+  const closeAssessment = () => {
+    setAssessment(null)
+    setResponses({})
+    setResults({})
+    setMessage('')
+    onCloseAssessment()
+  }
+
   const currentConcept = concepts.find(c => c.id === selectedId)
 
   return (
@@ -1457,8 +2069,14 @@ function AssessmentsPage({
               Target concept:
               <select
                 value={selectedId || ''}
-                onChange={e => setSelectedId(Number(e.target.value))}
-                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #dce4da', fontFamily: 'inherit', fontSize: 13 }}
+                onChange={e => {
+                  setSelectedId(Number(e.target.value))
+                  setAssessment(null)
+                  setResponses({})
+                  setResults({})
+                  setMessage('')
+                }}
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
               >
                 {concepts.map(c => (
                   <option key={c.id} value={c.id}>{c.name} ({c.topic})</option>
@@ -1477,9 +2095,42 @@ function AssessmentsPage({
                   if (Number.isInteger(value) && value >= 5 && value <= 20) setQuestionCount(value)
                 }}
                 disabled={loading || !!assessment}
-                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #dce4da', fontFamily: 'inherit', fontSize: 13 }}
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
               />
             </label>
+            <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
+              AI provider:
+              <select
+                value={providerMode}
+                onChange={e => {
+                  const mode = e.target.value as 'auto' | 'gemini' | 'ollama'
+                  setProviderMode(mode)
+                  localStorage.remindProviderMode = mode
+                }}
+                disabled={loading || !!assessment}
+                aria-label="AI provider for assessment generation"
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
+              >
+                <option value="auto">Automatic</option>
+                <option value="gemini">Gemini (cloud)</option>
+                <option value="ollama">Ollama (local)</option>
+              </select>
+            </label>
+            {providerMode === 'ollama' && <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
+              Local model:
+              {ollamaModel === 'qwen2.5:3b' && <span className="preferred-model-badge"><Sparkles size={12} /> Preferred</span>}
+              <select
+                value={ollamaModel}
+                onChange={event => { setOllamaModel(event.target.value); localStorage.remindAssessmentModel = event.target.value }}
+                disabled={loading || !!assessment || !ollamaAvailable}
+                aria-label="Ollama model for assessment generation"
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
+              >
+                {ollamaModels.length
+                  ? ollamaModels.map(model => <option key={model.id} value={model.id} disabled={!model.installed}>{model.label}{model.installed ? '' : ' (not installed)'}</option>)
+                  : <option value={ollamaModel}>{ollamaAvailable ? 'Loading models…' : 'Ollama unavailable'}</option>}
+              </select>
+            </label>}
             <div className="assessment-type-picker" ref={questionTypesRef}>
               <button
                 type="button"
@@ -1520,12 +2171,19 @@ function AssessmentsPage({
               )}
             </div>
             <button className="dark-btn" onClick={generateAssessment} disabled={loading || !selectedId}>
-              {loading ? <><RotateCw size={14} className="spin" /> Generating with local AI…</> : <><Target size={14} /> Generate recall check</>}
+              {loading ? <><RotateCw size={14} className="spin" /> Generating…</> : <><Target size={14} /> Generate recall check</>}
             </button>
           </div>
+          <p className="provider-note">
+            {providerMode === 'ollama'
+              ? 'Local mode keeps your study material on this device.'
+              : providerMode === 'gemini'
+                ? 'Cloud mode sends relevant study material to Gemini for generation.'
+                : 'Automatic mode prefers Gemini when configured and falls back to Ollama for temporary cloud failures.'}
+          </p>
 
           {currentConcept && (
-            <div style={{ background: '#fafbfa', border: '1px solid #edf0eb', borderRadius: 10, padding: 12, marginBottom: 16, fontSize: 12 }}>
+            <div className="theme-surface-muted" style={{ padding: 12, marginBottom: 16, fontSize: 12 }}>
               <b>{currentConcept.name}</b> · Topic: {currentConcept.topic} · Recorded attempts: {currentConcept.attempts} · Decay risk: {currentConcept.decay_risk !== null ? `${currentConcept.decay_risk}%` : 'Unassessed'}
             </div>
           )}
@@ -1584,14 +2242,22 @@ function AssessmentsPage({
                   </div>
                 )
               })}
-              <button
-                className="dark-btn"
-                style={{ marginTop: 18 }}
-                onClick={submitAssessment}
-                disabled={submitting || Object.keys(results).length > 0 || Object.keys(responses).length !== assessment.questions.length}
-              >
-                {submitting ? 'Grading assessment…' : 'Submit assessment'}
-              </button>
+              <div className="assessment-actions">
+                <button
+                  className="dark-btn"
+                  onClick={submitAssessment}
+                  disabled={submitting || Object.keys(results).length > 0 || !assessment.questions.every((question: any) => Object.prototype.hasOwnProperty.call(responses, String(question.id)))}
+                >
+                  {submitting ? 'Grading assessment…' : 'Submit assessment'}
+                </button>
+                <button
+                  type="button"
+                  className="light-btn assessment-close-btn"
+                  onClick={closeAssessment}
+                >
+                  Close assessment
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -1643,7 +2309,7 @@ function Overview({
               : 'Add your first study resource. ReMind will organize it into a learning map—without pretending you know it yet.'
             }
           </p>
-          {notice && <p className="notice" style={{ background: '#ffffffb0', marginBottom: 16, border: '1px solid #c9dec2' }}>{notice}</p>}
+          {notice && <p className="notice" style={{ marginBottom: 16 }}>{notice}</p>}
           {total ? (
             <button className="light-btn" onClick={rebuild} disabled={rebuilding}>
               {rebuilding ? (

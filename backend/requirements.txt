@@ -11,4 +11,5 @@ pyjwt>=2.8
 psycopg[binary]>=3.2
 pytest>=8.0
 alembic>=1.13
-
+google-genai>=1.0
+python-dotenv>=1.0
