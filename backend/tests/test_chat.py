@@ -21,6 +21,7 @@ def test_chat_persists_ordered_history_and_enforces_ownership(monkeypatch):
     other = register(client, 'chat_other')
     created = client.post('/api/v1/chat/conversations', headers=owner, json={'provider_preference': 'ollama'})
     assert created.status_code == 200
+    assert created.json()['model_preference'] == 'qwen2.5:3b'
     conversation_id = created.json()['id']
 
     monkeypatch.setattr(provider.ollama, 'generate_chat_with_model', AsyncMock(return_value='DBMS is a database management system.'))

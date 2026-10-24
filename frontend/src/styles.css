@@ -313,6 +313,19 @@ header h2{font-size:var(--fs-h2);letter-spacing:-1px;margin-top:6px;color:var(--
 .danger-btn:hover:not(:disabled){filter:brightness(1.12)}
 .light-btn:disabled,.dark-btn:disabled,.upload:disabled{opacity:.65;cursor:wait}
 .upload:hover,.dark-btn:hover{filter:brightness(1.1)}
+.workflow-toast{position:fixed;right:24px;bottom:24px;z-index:1200;width:min(390px,calc(100vw - 32px));display:flex;align-items:flex-start;gap:10px;padding:14px 15px;border:1px solid var(--border);border-radius:13px;background:var(--bg-card);box-shadow:0 16px 40px rgba(8,20,15,.2);animation:toastIn .22s ease}
+.workflow-toast-icon{display:grid;place-items:center;flex:0 0 30px;width:30px;height:30px;border-radius:9px}
+.workflow-toast-copy{display:flex;flex:1;min-width:0;flex-direction:column;gap:3px}
+.workflow-toast-copy strong{color:var(--text-primary);font-size:var(--fs-sm)}
+.workflow-toast-copy span{color:var(--text-muted);font-size:var(--fs-xs);line-height:1.45}
+.workflow-toast button{display:grid;place-items:center;border:0;padding:3px;background:transparent;color:var(--text-muted);cursor:pointer}
+.workflow-toast.uploading,.workflow-toast.info{border-color:var(--border-input-focus)}
+.workflow-toast.uploading .workflow-toast-icon,.workflow-toast.info .workflow-toast-icon{background:var(--bg-notice);color:var(--text-notice)}
+.workflow-toast.success{border-color:var(--feedback-ok-border)}
+.workflow-toast.success .workflow-toast-icon{background:var(--feedback-ok-bg);color:var(--feedback-ok-text)}
+.workflow-toast.error{border-color:var(--feedback-err-border)}
+.workflow-toast.error .workflow-toast-icon{background:var(--feedback-err-bg);color:var(--feedback-err-text)}
+@keyframes toastIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 .light-btn:hover{filter:brightness(.97)}
 .app-alert-backdrop{position:fixed;inset:0;z-index:1100;display:grid;place-items:center;padding:20px;background:rgba(8,14,12,.58);backdrop-filter:blur(8px);animation:fadeIn .18s ease}
 .app-alert{position:relative;width:min(100%,430px);display:grid;grid-template-columns:42px 1fr;gap:0 14px;padding:22px;background:var(--bg-card);border:1px solid var(--border);border-radius:18px;box-shadow:0 20px 55px rgba(8,20,15,.25);animation:modalPop .22s cubic-bezier(.16,1,.3,1)}

@@ -19,7 +19,9 @@ class InvalidAIResponse(RuntimeError): pass
 
 logger = logging.getLogger(__name__)
 T = TypeVar('T', bound=BaseModel)
-OLLAMA_MODEL_OPTIONS = ('qwen2.5:3b', 'qwen3:4b')
+OLLAMA_MODEL_OPTIONS = ('qwen3:4b', 'qwen2.5:3b')
+OLLAMA_CHAT_MODEL_OPTIONS = ('qwen2.5:3b', 'qwen3:4b')
+OLLAMA_CHAT_DEFAULT_MODEL = 'qwen2.5:3b'
 
 def parse_structured(text: str, schema: type[T]) -> T:
     candidate=re.sub(r'<think>.*?</think>', '', text, flags=re.S).strip()
@@ -119,7 +121,7 @@ def ollama_supports_thinking_control(model_info: dict[str, Any]) -> bool:
 class OllamaProvider:
     def __init__(self):
         self.base=os.getenv('OLLAMA_BASE_URL','http://localhost:11434').rstrip('/')
-        self.llm=os.getenv('OLLAMA_LLM_MODEL','qwen2.5:3b')
+        self.llm=os.getenv('OLLAMA_LLM_MODEL','qwen3:4b')
         self.embedding=os.getenv('OLLAMA_EMBEDDING_MODEL','qwen3-embedding:0.6b')
         self.timeout=float(os.getenv('OLLAMA_TIMEOUT_SECONDS','180'))
         self.limit=asyncio.Semaphore(int(os.getenv('AI_CONCURRENCY_LIMIT','1')))

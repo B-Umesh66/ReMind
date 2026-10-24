@@ -15,7 +15,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, delete, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
-from .ai import provider, OLLAMA_MODEL_OPTIONS, AICloudError, AIConfigurationError, AIUnavailable, InvalidAIResponse
+from .ai import (
+    provider, OLLAMA_MODEL_OPTIONS, OLLAMA_CHAT_MODEL_OPTIONS, OLLAMA_CHAT_DEFAULT_MODEL,
+    AICloudError, AIConfigurationError, AIUnavailable, InvalidAIResponse,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ class ChatConversation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), index=True)
     title: Mapped[str] = mapped_column(String(160), default='New study chat')
     provider_preference: Mapped[str] = mapped_column(String(16), default='auto')
-    model_preference: Mapped[str] = mapped_column(String(128), default='qwen2.5:3b')
+    model_preference: Mapped[str] = mapped_column(String(128), default=OLLAMA_CHAT_DEFAULT_MODEL)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
 class ChatMessage(Base):
@@ -96,11 +99,11 @@ if os.getenv('ALEMBIC_RUNNING') != '1':
                 if 'display_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(120) DEFAULT ''"))
                 if 'workspace_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
                 chat_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(chat_conversations)"))]
-                if 'model_preference' not in chat_cols: conn.execute(text("ALTER TABLE chat_conversations ADD COLUMN model_preference VARCHAR(128) DEFAULT 'qwen2.5:3b'"))
+                if 'model_preference' not in chat_cols: conn.execute(text(f"ALTER TABLE chat_conversations ADD COLUMN model_preference VARCHAR(128) DEFAULT '{OLLAMA_CHAT_DEFAULT_MODEL}'"))
             else:
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(120) DEFAULT ''"))
                 conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
-                conn.execute(text("ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS model_preference VARCHAR(128) DEFAULT 'qwen2.5:3b'"))
+                conn.execute(text(f"ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS model_preference VARCHAR(128) DEFAULT '{OLLAMA_CHAT_DEFAULT_MODEL}'"))
     except Exception: pass
 def db():
     with SessionLocal() as s: yield s
@@ -180,7 +183,7 @@ class AnswerSubmit(BaseModel): response: str = Field(min_length=1,max_length=100
 class AssessmentSubmit(BaseModel): answers: dict[int, str] = Field(min_length=1, max_length=20)
 class ChatConversationCreate(BaseModel):
     provider_preference: str = Field(default='auto', pattern='^(auto|gemini|ollama)$')
-    model_preference: str = Field(default='qwen2.5:3b', max_length=128)
+    model_preference: str = Field(default=OLLAMA_CHAT_DEFAULT_MODEL, max_length=128)
 class ChatMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     use_materials: bool = False
@@ -477,7 +480,7 @@ async def extract_concepts(document_id:int,u:User=Depends(current_user),s:Sessio
       "Only include concepts explicitly supported by passages. Relationships must name two extracted concepts and be supported by the same passage set. "
       "Return at most 6 concepts and 8 relationships. Valid kinds for relationship are: PART_OF, PREREQUISITE_OF, RELATED_TO, EXPLAINS, APPLIED_IN. "
       "Schema: {concepts:[{name,description,supporting_chunk}],relationships:[{source,target,kind,supporting_chunk}]}.\n\n"+sources)
-    try: result=await provider.structured(prompt,ExtractionResult)
+    try: result=await provider.ollama.structured(prompt,ExtractionResult,model=provider.llm)
     except AIUnavailable as e: raise HTTPException(503,str(e))
     except InvalidAIResponse as e: raise HTTPException(502,str(e))
     existing={c.name.strip().lower():c for c in s.scalars(select(Concept).where(Concept.user_id==u.id)).all()}; added=[]
@@ -687,7 +690,7 @@ def chat_providers() -> dict:
         'providers': [
             {'id': 'ollama', 'label': 'Ollama', 'available': bool(installed), 'models': [
                 {'id': model, 'label': model.replace(':', ' ').replace('qwen', 'Qwen').replace('2.5', '2.5').replace('3b', '3B').replace('4b', '4B'), 'installed': model in installed}
-                for model in OLLAMA_MODEL_OPTIONS
+                for model in OLLAMA_CHAT_MODEL_OPTIONS
             ]},
             {'id': 'gemini', 'label': 'Gemini', 'available': bool(provider.gemini.api_key), 'model': provider.gemini.model},
         ],
@@ -696,7 +699,7 @@ def chat_providers() -> dict:
 
 @app.post('/api/v1/chat/conversations')
 def create_chat_conversation(body: ChatConversationCreate, u: User = Depends(current_user), s: Session = Depends(db)):
-    if body.model_preference not in OLLAMA_MODEL_OPTIONS:
+    if body.model_preference not in OLLAMA_CHAT_MODEL_OPTIONS:
         raise HTTPException(422, 'Unsupported Ollama model')
     conversation = ChatConversation(user_id=u.id, provider_preference=body.provider_preference, model_preference=body.model_preference)
     s.add(conversation)
@@ -761,8 +764,8 @@ async def send_chat_message(
     selected_provider = body.provider or conversation.provider_preference
     if selected_provider not in {'auto', 'gemini', 'ollama'}:
         raise HTTPException(422, 'Invalid AI provider')
-    selected_model = body.model or conversation.model_preference or 'qwen2.5:3b'
-    if selected_model not in OLLAMA_MODEL_OPTIONS:
+    selected_model = body.model or conversation.model_preference or OLLAMA_CHAT_DEFAULT_MODEL
+    if selected_model not in OLLAMA_CHAT_MODEL_OPTIONS:
         raise HTTPException(422, 'Unsupported Ollama model')
     content = body.content.strip()
     if not content:

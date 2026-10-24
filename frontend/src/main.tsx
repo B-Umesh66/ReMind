@@ -66,11 +66,18 @@ function App() {
   const [profileModalOpen, setProfileModalOpen] = useState(false)
   const [profileModalTab, setProfileModalTab] = useState<'profile' | 'workspace' | 'stats' | 'security'>('profile')
   const [documentsRefreshKey, setDocumentsRefreshKey] = useState(0)
+  const [uploadStatus, setUploadStatus] = useState<{ state: 'uploading' | 'success' | 'error' | 'info'; title: string; message: string } | null>(null)
   const [theme, setTheme] = useState<'light' | 'dark'>((localStorage.remindTheme || 'light') as 'light' | 'dark')
   const [fscale, setFscale] = useState<FontScale>((localStorage.remindScale || 'md') as FontScale)
   const file = useRef<HTMLInputElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!uploadStatus || uploadStatus.state === 'uploading' || uploadStatus.state === 'info') return
+    const timeout = window.setTimeout(() => setUploadStatus(null), 5000)
+    return () => window.clearTimeout(timeout)
+  }, [uploadStatus])
 
   // Apply theme + scale on mount and change
   useEffect(() => { applyTheme(theme); localStorage.remindTheme = theme }, [theme])
@@ -161,7 +168,7 @@ function App() {
     setProfileModalOpen(false)
   }
 
-  const rebuild = async () => {
+  const rebuild = async (notify = true) => {
     if (!token || rebuilding) return
     setRebuilding(true)
     try {
@@ -169,13 +176,13 @@ function App() {
       if (r.ok) {
         const body = await r.json()
         await load()
-        setAppAlert({ title: 'Revision queue updated', message: body.message || 'Your revision recommendations are up to date.', tone: 'success' })
+        if (notify) setAppAlert({ title: 'Revision queue updated', message: body.message || 'Your revision recommendations are up to date.', tone: 'success' })
       } else {
         const err = await r.json().catch(() => ({}))
-        setAppAlert({ title: 'Revision queue update failed', message: err.detail || 'Revision recommendations could not be recalculated. Please try again.', tone: 'error' })
+        if (notify) setAppAlert({ title: 'Revision queue update failed', message: err.detail || 'Revision recommendations could not be recalculated. Please try again.', tone: 'error' })
       }
     } catch {
-      setAppAlert({ title: 'Revision queue update failed', message: 'Could not connect to update revision recommendations. Please try again.', tone: 'error' })
+      if (notify) setAppAlert({ title: 'Revision queue update failed', message: 'Could not connect to update revision recommendations. Please try again.', tone: 'error' })
     } finally {
       setRebuilding(false)
     }
@@ -198,45 +205,49 @@ function App() {
   }
 
   const upload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    let f = e.target.files?.[0]
+    const f = e.target.files?.[0]
     if (!f || !token) return
-    let form = new FormData()
+    const form = new FormData()
     form.append('file', f)
-    let r = await fetch(API + '/documents', { method: 'POST', headers: headers(), body: form })
-    if (r.ok) {
-      const result = await r.json()
-      setDocumentsRefreshKey(key => key + 1)
-      await load()
-      e.target.value = ''
-      setAppAlert({
-        title: 'Study material uploaded',
-        message: `"${f.name}" is ready. Would you like ReMind to extract concepts from it now?`,
-        tone: 'confirm',
-        confirmLabel: 'Extract concepts',
-        onConfirm: () => {
-          setAppAlert({ title: 'Extracting concepts', message: 'ReMind is reading your material and building its knowledge map…', tone: 'info' })
-          fetch(`${API}/documents/${result.id}/extract-concepts`, { method: 'POST', headers: headers() })
-            .then(async extraction => {
-              const extractionResult = await extraction.json()
-              if (!extraction.ok) throw new Error(extractionResult.detail || 'Concept extraction failed. You can try again from My Library.')
-              setAppAlert({
-                title: 'Extraction complete',
-                message: `Added ${extractionResult.concepts_added || 0} concepts to your knowledge map.`,
-                tone: 'success'
+    setUploadStatus({ state: 'uploading', title: 'Uploading study material', message: `Uploading "${f.name}"…` })
+    try {
+      const r = await fetch(API + '/documents', { method: 'POST', headers: headers(), body: form })
+      if (r.ok) {
+        const result = await r.json()
+        setDocumentsRefreshKey(key => key + 1)
+        await load()
+        setUploadStatus({ state: 'success', title: 'Upload complete', message: `"${f.name}" uploaded successfully.` })
+        e.target.value = ''
+        setAppAlert({
+          title: 'Study material uploaded',
+          message: `"${f.name}" is ready. Would you like ReMind to extract concepts from it now?`,
+          tone: 'confirm',
+          confirmLabel: 'Extract concepts',
+          onConfirm: () => {
+            setUploadStatus({ state: 'info', title: 'Extracting concepts', message: 'ReMind is reading your material and building your knowledge map…' })
+            fetch(`${API}/documents/${result.id}/extract-concepts`, { method: 'POST', headers: headers() })
+              .then(async extraction => {
+                const extractionResult = await extraction.json()
+                if (!extraction.ok) throw new Error(extractionResult.detail || 'Concept extraction failed. You can try again from My Library.')
+                setUploadStatus({ state: 'success', title: 'Extraction complete', message: `Added ${extractionResult.concepts_added || 0} concepts to your knowledge map.` })
+                await load()
+                setDocumentsRefreshKey(key => key + 1)
+                void rebuild(false)
               })
-              await load()
-              await rebuild()
-            })
-            .catch(error => setAppAlert({
-              title: 'Extraction could not be completed',
-              message: error instanceof Error ? error.message : 'Could not connect to the server. You can try again from My Library.',
-              tone: 'error'
-            }))
-        }
-      })
-    } else {
-      const error = await r.json().catch(() => ({}))
-      setAppAlert({ title: 'Upload failed', message: error.detail || 'The file could not be uploaded.', tone: 'error' })
+              .catch(error => setUploadStatus({
+                state: 'error',
+                title: 'Extraction failed',
+                message: error instanceof Error ? error.message : 'Could not connect to the server. You can try again from My Library.'
+              }))
+          }
+        })
+      } else {
+        const error = await r.json().catch(() => ({}))
+        setUploadStatus({ state: 'error', title: 'Upload failed', message: error.detail || 'The file could not be uploaded.' })
+        e.target.value = ''
+      }
+    } catch {
+      setUploadStatus({ state: 'error', title: 'Upload failed', message: 'Could not connect to the server. Please try again.' })
       e.target.value = ''
     }
   }
@@ -413,11 +424,10 @@ function App() {
             <button className="assistant-header-btn" onClick={openFreshAssistant} title="Open AI Study Assistant">
               <MessageCircle size={17} /> <span>AI Assistant</span>
             </button>
-            <button className="upload" onClick={() => file.current?.click()}><Plus size={17} />Add material</button>
+            <button className="upload" onClick={() => file.current?.click()} disabled={uploadStatus?.state === 'uploading'}><Plus size={17} />{uploadStatus?.state === 'uploading' ? 'Uploading…' : 'Add material'}</button>
           </div>
-          <input ref={file} onChange={upload} type="file" accept=".pdf,.docx,.txt,.md" hidden />
+          <input ref={file} onChange={upload} type="file" accept=".pdf,.docx,.txt,.md" hidden disabled={uploadStatus?.state === 'uploading'} />
         </header>
-
         {tab === 'Overview' ? (
           <Overview
             d={data}
@@ -428,7 +438,7 @@ function App() {
             onStartAssessment={startAssessmentForConcept}
           />
         ) : tab === 'My Library' ? (
-          <LibraryPage {...shared} />
+          <LibraryPage {...shared} onWorkflowNotify={(toast) => setUploadStatus(toast)} />
         ) : tab === 'Knowledge Map' ? (
           <GraphPage {...shared} />
         ) : tab === 'AI Study Assistant' ? (
@@ -497,6 +507,12 @@ function App() {
         <AppAlert
           {...appAlert}
           onClose={() => setAppAlert(null)}
+        />
+      )}
+      {uploadStatus && (
+        <WorkflowToast
+          {...uploadStatus}
+          onClose={() => setUploadStatus(null)}
         />
       )}
     </div>
@@ -1431,7 +1447,7 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
             </select>
           </label>
           {providerMode === 'ollama' && <label className="chat-tool-select">Local model
-            {ollamaModel === 'qwen2.5:3b' && <span className="preferred-model-badge" title="Recommended for concise study answers"><Sparkles size={12} /> Preferred</span>}
+            {ollamaModel === 'qwen2.5:3b' && <span className="preferred-model-badge" title="Recommended for study assistant chat"><Sparkles size={12} /> Preferred</span>}
             <select value={ollamaModel} onChange={event => setOllamaModel(event.target.value)} aria-label="Ollama model" disabled={!ollamaAvailable}>
               {ollamaModels.length ? ollamaModels.map(model => <option key={model.id} value={model.id} disabled={!model.installed}>{model.label}{model.installed ? '' : ' (not installed)'}</option>) : <option value={ollamaModel}>{ollamaAvailable ? 'Loading models…' : 'Ollama unavailable'}</option>}
             </select>
@@ -1444,7 +1460,29 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
   </section>
 }
 
-function LibraryPage({ headers, refresh, documentsRefreshKey }: { headers: () => Record<string, string>, refresh: () => Promise<void>, documentsRefreshKey: number }) {
+type WorkflowToast = { state: 'uploading' | 'success' | 'error' | 'info'; title: string; message: string }
+
+function WorkflowToast({ state, title, message, onClose }: WorkflowToast & { onClose: () => void }) {
+  return (
+    <div className={`workflow-toast ${state}`} role="status" aria-live="polite">
+      <div className="workflow-toast-icon">
+        {state === 'uploading' || state === 'info' ? <RotateCw size={16} className="spin" /> : state === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+      </div>
+      <div className="workflow-toast-copy">
+        <strong>{title}</strong>
+        <span>{message}</span>
+      </div>
+      {state !== 'uploading' && state !== 'info' && <button type="button" onClick={onClose} aria-label="Dismiss notification"><X size={15} /></button>}
+    </div>
+  )
+}
+
+function LibraryPage({ headers, refresh, documentsRefreshKey, onWorkflowNotify }: {
+  headers: () => Record<string, string>
+  refresh: () => Promise<void>
+  documentsRefreshKey: number
+  onWorkflowNotify: (toast: WorkflowToast) => void
+}) {
   const [docs, setDocs] = useState<any[]>([])
   const [message, setMessage] = useState('')
   const [deleting, setDeleting] = useState<number | null>(null)
@@ -1457,12 +1495,27 @@ function LibraryPage({ headers, refresh, documentsRefreshKey }: { headers: () =>
   useEffect(() => { load() }, [documentsRefreshKey])
 
   const action = async (id: number, path: string) => {
+    const isExtraction = path === 'extract-concepts'
     setMessage('Working with local AI…')
-    let r = await fetch(`${API}/documents/${id}/${path}`, { method: 'POST', headers: headers() })
-    let b = await r.json()
-    setMessage(r.ok ? `${path === 'retry' ? 'Indexed' : `Added ${b.concepts_added || 0} concepts`} successfully.` : b.detail || 'Action failed. Start Ollama and try again.')
-    await load()
-    await refresh()
+    if (isExtraction) onWorkflowNotify({ state: 'info', title: 'Extracting concepts', message: 'ReMind is reading your material and building your knowledge map…' })
+    try {
+      const r = await fetch(`${API}/documents/${id}/${path}`, { method: 'POST', headers: headers() })
+      const b = await r.json().catch(() => ({}))
+      const message = r.ok ? `${path === 'retry' ? 'Indexed' : `Added ${b.concepts_added || 0} concepts`} successfully.` : b.detail || 'Action failed. Start Ollama and try again.'
+      if (isExtraction) {
+        onWorkflowNotify({ state: r.ok ? 'success' : 'error', title: r.ok ? 'Extraction complete' : 'Extraction failed', message })
+      } else {
+        setMessage(message)
+      }
+      await load()
+      await refresh()
+    } catch {
+      if (isExtraction) {
+        onWorkflowNotify({ state: 'error', title: 'Extraction failed', message: 'Could not connect to the server. Please try again.' })
+      } else {
+        setMessage('Could not connect to the server. Please try again.')
+      }
+    }
   }
 
   const deleteDoc = async (id: number, name: string) => {
@@ -1886,7 +1939,7 @@ function AssessmentsPage({
   const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'ollama'>(
     (localStorage.remindProviderMode || 'auto') as 'auto' | 'gemini' | 'ollama'
   )
-  const [ollamaModel, setOllamaModel] = useState(localStorage.remindAssessmentModel || 'qwen2.5:3b')
+  const [ollamaModel, setOllamaModel] = useState(localStorage.remindAssessmentModel || 'qwen3:4b')
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [ollamaAvailable, setOllamaAvailable] = useState(true)
   const [loading, setLoading] = useState(false)
@@ -2118,7 +2171,7 @@ function AssessmentsPage({
             </label>
             {providerMode === 'ollama' && <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
               Local model:
-              {ollamaModel === 'qwen2.5:3b' && <span className="preferred-model-badge"><Sparkles size={12} /> Preferred</span>}
+              {ollamaModel === 'qwen3:4b' && <span className="preferred-model-badge"><Sparkles size={12} /> Preferred</span>}
               <select
                 value={ollamaModel}
                 onChange={event => { setOllamaModel(event.target.value); localStorage.remindAssessmentModel = event.target.value }}
