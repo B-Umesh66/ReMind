@@ -639,7 +639,7 @@ function ProfileModal({
       fetch(API + '/health')
         .then(r => r.json())
         .then(setHealth)
-        .catch(() => {})
+        .catch(() => { })
     }
   }, [isOpen])
 
@@ -1142,11 +1142,11 @@ function LoginPage({ authenticate }: { authenticate: (email: string, password: s
     <main className="auth-page">
       <div className="gate-orb"></div>
       <section className="auth-copy">
-        <div className="logo"><img src="/icon.png" alt="ReMind" className="brand-logo" /> ReMind</div>
+        <div className="logo"><img src="/icon.png" alt="ReMind" className="brand-logo" /><b>ReMind</b></div>
         <p className="eyebrow">THE PERSONAL LEARNING SYSTEM</p>
         <h1>Make your knowledge<br /><i>stay with you.</i></h1>
-        <p className="lead">A private study space that brings the right ideas back at the right moment.</p>
-        <p className="fine">Private by design · Local AI · Your material stays yours</p>
+        <p className="lead">Your personal AI study space that helps you remember what matters, understand ideas deeply, and revisit them at the right time.</p>
+        <p className="fine">Your learning · Your choice of AI · Your control</p>
       </section>
       <section className="auth-card">
         <p className="eyebrow">WELCOME TO REMIND</p>
@@ -1470,25 +1470,25 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
         <div className={`chat-conversation ${active?.id === conversation.id ? 'active' : ''}`} key={conversation.id}>
           {renamingConversationId === conversation.id
             ? <div className="chat-rename-editor">
-                <input value={renameDraft} onChange={event => setRenameDraft(event.target.value)} onKeyDown={event => {
-                  if (event.key === 'Enter') { event.preventDefault(); void renameChat(conversation) }
-                  if (event.key === 'Escape') { setRenamingConversationId(null); setRenameDraft('') }
-                }} autoFocus aria-label="Chat name" maxLength={160} />
-                <div className="chat-rename-actions">
-                  <button type="button" onClick={() => { void renameChat(conversation) }}>Save</button>
-                  <button type="button" onClick={() => { setRenamingConversationId(null); setRenameDraft('') }}>Cancel</button>
-                </div>
+              <input value={renameDraft} onChange={event => setRenameDraft(event.target.value)} onKeyDown={event => {
+                if (event.key === 'Enter') { event.preventDefault(); void renameChat(conversation) }
+                if (event.key === 'Escape') { setRenamingConversationId(null); setRenameDraft('') }
+              }} autoFocus aria-label="Chat name" maxLength={160} />
+              <div className="chat-rename-actions">
+                <button type="button" onClick={() => { void renameChat(conversation) }}>Save</button>
+                <button type="button" onClick={() => { setRenamingConversationId(null); setRenameDraft('') }}>Cancel</button>
               </div>
+            </div>
             : <>
-                <button className="chat-conversation-title" onClick={() => openConversation(conversation).catch(error => setError(error.message))}>{conversation.title}</button>
-                <div className="chat-conversation-menu-wrap">
-                  <button className="chat-menu-button" onClick={() => setOpenConversationMenu(current => current === conversation.id ? null : conversation.id)} aria-label={`Options for ${conversation.title}`} aria-expanded={openConversationMenu === conversation.id}><MoreHorizontal size={16} /></button>
-                  {openConversationMenu === conversation.id && <div className="chat-conversation-menu">
-                    <button onClick={() => beginRename(conversation)}><Pencil size={14} /> Rename</button>
-                    <button className="danger" onClick={() => { void removeChat(conversation) }}><Trash2 size={14} /> Delete</button>
-                  </div>}
-                </div>
-              </>}
+              <button className="chat-conversation-title" onClick={() => openConversation(conversation).catch(error => setError(error.message))}>{conversation.title}</button>
+              <div className="chat-conversation-menu-wrap">
+                <button className="chat-menu-button" onClick={() => setOpenConversationMenu(current => current === conversation.id ? null : conversation.id)} aria-label={`Options for ${conversation.title}`} aria-expanded={openConversationMenu === conversation.id}><MoreHorizontal size={16} /></button>
+                {openConversationMenu === conversation.id && <div className="chat-conversation-menu">
+                  <button onClick={() => beginRename(conversation)}><Pencil size={14} /> Rename</button>
+                  <button className="danger" onClick={() => { void removeChat(conversation) }}><Trash2 size={14} /> Delete</button>
+                </div>}
+              </div>
+            </>}
         </div>)}</div>
     </aside>
     <div className="chat-main">
@@ -1981,7 +1981,7 @@ function RevisionCenterPage({
 
   const visibleRevisions = revisions.filter(revision =>
     statusFilter === 'all'
-      || (statusFilter === 'completed' ? revision.status === 'completed' : revision.status !== 'completed')
+    || (statusFilter === 'completed' ? revision.status === 'completed' : revision.status !== 'completed')
   )
 
   return (

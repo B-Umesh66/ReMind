@@ -483,9 +483,11 @@ header h2{font-size:var(--fs-h2);letter-spacing:-1px;margin-top:6px;color:var(--
 /* ---------- Auth card ---------- */
 .auth-page{background:var(--bg-auth);min-height:100vh;display:grid;grid-template-columns:1.15fr .85fr;align-items:center;padding:8vw;gap:7vw;position:relative;overflow:hidden;transition:background .25s}
 .auth-copy{position:relative;z-index:1}
-.auth-copy .eyebrow{margin-top:17vh;color:var(--text-auth-eyebrow)}
+.auth-copy .logo{font-size:clamp(32px,3.2vw,44px);font-weight:800;letter-spacing:-1.5px;display:flex;align-items:center;gap:16px;margin-bottom:24px;color:var(--text-primary)}
+.auth-copy .logo .brand-logo,.auth-copy .logo img{width:56px;height:56px;filter:drop-shadow(0 6px 14px rgba(0,0,0,0.16))}
+.auth-copy .eyebrow{margin-top:6vh;color:var(--text-auth-eyebrow)}
 .auth-copy h1{font-size:clamp(40px,5vw,72px);line-height:1.04;letter-spacing:-3px;margin:22px 0 17px;color:var(--text-primary)}
-.auth-copy .lead{max-width:400px;font-size:var(--fs-lg);line-height:1.7;color:var(--text-auth-lead)}
+.auth-copy .lead{max-width:500px;font-size:var(--fs-lg);line-height:1.65;color:var(--text-auth-lead)}
 .auth-card{position:relative;z-index:1;background:var(--bg-card);border:1px solid var(--border);border-radius:18px;padding:33px;box-shadow:var(--shadow-card-lg);transition:background .25s}
 .auth-card h2{font-size:var(--fs-h2);letter-spacing:-1px;margin:9px 0;color:var(--text-primary)}
 .auth-card>p:not(.eyebrow){font-size:var(--fs-sm);line-height:1.6;color:var(--text-muted);margin-bottom:22px}
