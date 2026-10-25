@@ -24,6 +24,27 @@ OLLAMA_MODEL_OPTIONS = ('qwen3:4b', 'qwen2.5:3b')
 OLLAMA_CHAT_MODEL_OPTIONS = ('qwen2.5:3b', 'qwen3:4b')
 OLLAMA_CHAT_DEFAULT_MODEL = 'qwen2.5:3b'
 GROQ_MODEL_OPTIONS = ('openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b')
+GEMINI_MODEL_OPTIONS = (
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
+)
+GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-lite'
+GEMINI_MODEL_LABELS = {
+    'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
+    'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite',
+    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite (Legacy)',
+    'gemini-2.5-flash': 'Gemini 2.5 Flash (Legacy)',
+    'gemini-2.0-flash': 'Gemini 2.0 Flash',
+    'gemini-flash-latest': 'Gemini Flash Latest',
+}
+GEMINI_ALL_SUPPORTED_MODELS = (
+    'gemini-3.1-flash-lite',
+    'gemini-3.5-flash-lite',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-flash-latest',
+)
 
 
 def parse_structured(text: str, schema: type[T]) -> T:
@@ -252,7 +273,7 @@ class OllamaProvider:
 class GeminiProvider:
     def __init__(self):
         self._api_key = os.getenv('GEMINI_API_KEY', '').strip()
-        self.model = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+        self.model = os.getenv('GEMINI_MODEL', GEMINI_DEFAULT_MODEL)
         self.timeout = float(os.getenv('GEMINI_TIMEOUT_SECONDS', '120'))
         self.retry_attempts = max(1, int(os.getenv('GEMINI_RETRY_ATTEMPTS', '2')))
         self._client = None
@@ -283,25 +304,36 @@ class GeminiProvider:
                 self._client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(self.timeout*1000)))
             except ImportError as e: raise AIConfigurationError('Gemini support requires the google-genai package.') from e
         return self._client
+
     @staticmethod
-    def _error(error: Exception) -> AICloudError:
-        text=str(error).lower()
-        status_match=re.search(r'\b(408|429|500|502|503|504)\b', text)
-        status=status_match.group(1) if status_match else None
-        auth=any(x in text for x in ('401','403','api key','authentication','unauthorized','permission'))
-        quota=any(x in text for x in ('429','quota','resource exhausted','rate limit'))
-        retryable=not auth and not quota and any(x in text for x in ('timeout','timed out','connection','temporarily','unavailable','deadline','503','500','502','504'))
-        if auth: return AICloudError('Gemini authentication failed. Check GEMINI_API_KEY.', retryable=False)
-        if quota: return AICloudError('Gemini quota or rate limit reached.', retryable=False)
+    def _error(error: Exception, model: str | None = None) -> AICloudError:
+        text = str(error).lower()
+        model_str = f" for model '{model}'" if model else ""
+        if '404' in text or 'not_found' in text or 'not found' in text or 'no longer available' in text:
+            if 'no longer available' in text or 'deprecated' in text:
+                return AICloudError(f"Gemini model '{model or 'requested'}' is deprecated or no longer available to your account. Please select a supported model such as Gemini 3.5 Flash-Lite or Gemini 3.1 Flash-Lite.", retryable=False)
+            return AICloudError(f"Gemini model '{model or 'requested'}' was not found. Please verify your model selection.", retryable=False)
+        auth = any(x in text for x in ('401', '403', 'api key', 'authentication', 'unauthorized', 'permission'))
+        if auth:
+            return AICloudError('Gemini authentication failed. Please verify your GEMINI_API_KEY in backend environment.', retryable=False)
+        quota = any(x in text for x in ('429', 'quota', 'resource exhausted', 'rate limit'))
+        if quota:
+            if 'daily' in text or 'per day' in text or 'exhausted' in text:
+                return AICloudError(f'Gemini daily quota exhausted{model_str}. Please select another model or try again tomorrow.', retryable=False)
+            return AICloudError(f'Gemini rate limit reached{model_str}. Please wait a moment before retrying.', retryable=False)
+        if '503' in text or 'unavailable' in text or 'high demand' in text:
+            return AICloudError(f'Gemini service{model_str} is temporarily unavailable or experiencing high demand. Please retry shortly.', retryable=True)
+        status_match = re.search(r'\b(408|500|502|504)\b', text)
+        status = status_match.group(1) if status_match else None
+        retryable = any(x in text for x in ('timeout', 'timed out', 'connection', 'temporarily', 'deadline', '500', '502', '504'))
         if status:
-            return AICloudError(
-                f'Gemini request failed with HTTP {status}. Please retry shortly.',
-                retryable=retryable,
-            )
-        return AICloudError('Gemini request failed.' if not retryable else 'Gemini is temporarily unavailable.', retryable=retryable)
-    async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None)->str:
+            return AICloudError(f'Gemini request failed with HTTP {status}. Please retry shortly.', retryable=retryable)
+        return AICloudError(f'Gemini request failed{model_str}.' if not retryable else f'Gemini is temporarily unavailable{model_str}.', retryable=retryable)
+
+    async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None, model: str | None = None)->str:
         client=self._get_client()
         from google.genai import types
+        selected_model = model or self.model or GEMINI_DEFAULT_MODEL
         config=types.GenerateContentConfig(temperature=0.1)
         if output_format is not None:
             config.response_mime_type='application/json'
@@ -310,21 +342,23 @@ class GeminiProvider:
             started=time.perf_counter()
             try:
                 self.last_request_count += 1
-                response=await asyncio.to_thread(client.models.generate_content, model=self.model, contents=prompt, config=config)
+                response=await asyncio.to_thread(client.models.generate_content, model=selected_model, contents=prompt, config=config)
                 text=getattr(response, 'text', None)
                 if not isinstance(text,str) or not text.strip(): raise InvalidAIResponse('Gemini returned an empty response.')
-                logger.info('gemini_request model=%s attempt=%s duration_ms=%.1f prompt_chars=%s response_chars=%s', self.model, attempt + 1, (time.perf_counter()-started)*1000, len(prompt), len(text))
+                logger.info('gemini_request model=%s attempt=%s duration_ms=%.1f prompt_chars=%s response_chars=%s', selected_model, attempt + 1, (time.perf_counter()-started)*1000, len(prompt), len(text))
                 return text.strip()
             except InvalidAIResponse: raise
             except Exception as error:
-                cloud_error=self._error(error)
+                cloud_error=self._error(error, selected_model)
                 if not cloud_error.retryable or attempt + 1 >= self.retry_attempts:
                     raise cloud_error from error
-                logger.warning('gemini_retry attempt=%s reason=%s', attempt + 1, str(cloud_error))
+                logger.warning('gemini_retry model=%s attempt=%s reason=%s', selected_model, attempt + 1, str(cloud_error))
                 await asyncio.sleep(1)
-        raise AICloudError('Gemini request failed.', retryable=False)
-    async def structured(self, prompt:str, schema:type[T])->T:
-        return parse_structured(await self.generate(prompt, schema.model_json_schema()), schema)
+        raise AICloudError(f"Gemini request failed for model '{selected_model}'.", retryable=False)
+
+    async def structured(self, prompt:str, schema:type[T], model: str | None = None)->T:
+        selected_model = model or self.model or GEMINI_DEFAULT_MODEL
+        return parse_structured(await self.generate(prompt, schema.model_json_schema(), model=selected_model), schema)
 
 class GroqProvider:
     """OpenAI‑compatible client for Groq API."""
@@ -462,7 +496,7 @@ class HybridAIProvider:
             if not self.gemini.api_key:
                 raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
             self.last_provider='gemini'
-            result = await self.gemini.generate(prompt, output_format)
+            result = await (self.gemini.generate(prompt, output_format, model=model) if model else self.gemini.generate(prompt, output_format))
             self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
             return result
         if selected=='groq':
@@ -478,7 +512,7 @@ class HybridAIProvider:
             return result
         try:
             self.last_provider='gemini'
-            result = await self.gemini.generate(prompt, output_format)
+            result = await (self.gemini.generate(prompt, output_format, model=model) if model else self.gemini.generate(prompt, output_format))
             self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
             return result
         except AICloudError as e:
@@ -502,7 +536,8 @@ class HybridAIProvider:
             if not self.gemini.api_key:
                 raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
             self.last_provider = 'gemini'
-            return await self.gemini.generate(user_prompt)
+            full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
+            return await (self.gemini.generate(full_prompt, model=model) if model else self.gemini.generate(full_prompt))
         if selected == 'groq':
             self.last_provider = 'groq'
             return await self.groq.generate_chat(system_prompt, user_prompt, model=model)
@@ -513,7 +548,8 @@ class HybridAIProvider:
                 return await self.ollama.generate_chat_with_model(system_prompt, user_prompt, model)
             return await self.ollama.generate_chat(system_prompt, user_prompt)
         self.last_provider = 'gemini'
-        return await self.gemini.generate(user_prompt)
+        full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
+        return await (self.gemini.generate(full_prompt, model=model) if model else self.gemini.generate(full_prompt))
 
     async def structured(self, prompt:str, schema:type[T], *, mode: str | None = None, model: str | None = None)->T:
         selected = self._selected_mode(mode)
@@ -526,7 +562,7 @@ class HybridAIProvider:
             if not self.gemini.api_key:
                 raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
             self.last_provider='gemini'
-            result = await self.gemini.structured(prompt, schema)
+            result = await (self.gemini.structured(prompt, schema, model=model) if model else self.gemini.structured(prompt, schema))
             self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
             return result
         if selected=='groq':
@@ -541,7 +577,7 @@ class HybridAIProvider:
             self.last_request_count = getattr(self.ollama, 'last_request_count', 1)
             return result
         try:
-            result = await self.gemini.structured(prompt, schema)
+            result = await (self.gemini.structured(prompt, schema, model=model) if model else self.gemini.structured(prompt, schema))
             self.last_provider='gemini'
             self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
             return result

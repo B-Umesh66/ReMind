@@ -17,6 +17,7 @@ from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, St
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .ai import (
     provider, OLLAMA_MODEL_OPTIONS, OLLAMA_CHAT_MODEL_OPTIONS, OLLAMA_CHAT_DEFAULT_MODEL, GROQ_MODEL_OPTIONS,
+    GEMINI_MODEL_OPTIONS, GEMINI_ALL_SUPPORTED_MODELS, GEMINI_MODEL_LABELS, GEMINI_DEFAULT_MODEL,
     AICloudError, AIConfigurationError, AIUnavailable, InvalidAIResponse,
 )
 
@@ -184,7 +185,7 @@ class AnswerSubmit(BaseModel): response: str = Field(min_length=1,max_length=100
 class AssessmentSubmit(BaseModel): answers: dict[int, str] = Field(min_length=1, max_length=20)
 class ChatConversationCreate(BaseModel):
     provider_preference: str = Field(default='ollama', pattern='^(auto|gemini|ollama|groq)$')
-    model_preference: str = Field(default=OLLAMA_CHAT_DEFAULT_MODEL, max_length=128)
+    model_preference: Optional[str] = Field(default=None, max_length=128)
 class ChatMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     use_materials: bool = False
@@ -694,7 +695,8 @@ def chat_providers() -> dict:
                 for model in OLLAMA_CHAT_MODEL_OPTIONS
             ]},
             {'id': 'gemini', 'label': 'Gemini (cloud)', 'available': bool(provider.gemini.api_key), 'models': [
-                {'id': provider.gemini.model, 'label': provider.gemini.model, 'installed': True}
+                {'id': model, 'label': GEMINI_MODEL_LABELS.get(model, model), 'installed': True}
+                for model in GEMINI_MODEL_OPTIONS
             ]},
             {'id': 'groq', 'label': 'Groq (cloud)', 'available': bool(provider.groq.api_key), 'models': [
                 {'id': model, 'label': model, 'installed': True}
@@ -709,11 +711,27 @@ def create_chat_conversation(body: ChatConversationCreate, u: User = Depends(cur
     pref_provider = body.provider_preference
     if pref_provider == 'auto':
         pref_provider = 'gemini' if provider.gemini.api_key else 'ollama'
-    if pref_provider == 'ollama' and body.model_preference not in OLLAMA_CHAT_MODEL_OPTIONS:
-        raise HTTPException(422, 'Unsupported Ollama model')
-    if pref_provider == 'groq' and body.model_preference not in GROQ_MODEL_OPTIONS:
-        raise HTTPException(422, 'Unsupported Groq model')
-    conversation = ChatConversation(user_id=u.id, provider_preference=pref_provider, model_preference=body.model_preference)
+    if pref_provider not in {'gemini', 'ollama', 'groq'}:
+        raise HTTPException(422, 'Invalid AI provider')
+
+    model_pref = body.model_preference
+    if pref_provider == 'ollama':
+        if model_pref and model_pref not in OLLAMA_CHAT_MODEL_OPTIONS:
+            raise HTTPException(422, 'Unsupported Ollama model')
+        if not model_pref:
+            model_pref = OLLAMA_CHAT_DEFAULT_MODEL
+    elif pref_provider == 'groq':
+        if model_pref and model_pref not in GROQ_MODEL_OPTIONS:
+            raise HTTPException(422, 'Unsupported Groq model')
+        if not model_pref:
+            model_pref = GROQ_MODEL_OPTIONS[0]
+    elif pref_provider == 'gemini':
+        if model_pref and model_pref not in GEMINI_ALL_SUPPORTED_MODELS:
+            raise HTTPException(422, 'Unsupported Gemini model')
+        if not model_pref:
+            model_pref = GEMINI_DEFAULT_MODEL
+
+    conversation = ChatConversation(user_id=u.id, provider_preference=pref_provider, model_preference=model_pref)
     s.add(conversation)
     s.commit()
     s.refresh(conversation)
@@ -778,13 +796,24 @@ async def send_chat_message(
         selected_provider = 'gemini' if provider.gemini.api_key else 'ollama'
     if selected_provider not in {'gemini', 'ollama', 'groq'}:
         raise HTTPException(422, 'Invalid AI provider')
-    selected_model = body.model or conversation.model_preference or OLLAMA_CHAT_DEFAULT_MODEL
+    selected_model = body.model
+    if not selected_model and conversation.provider_preference == selected_provider:
+        selected_model = conversation.model_preference
     if selected_provider == 'ollama':
-        if selected_model not in OLLAMA_CHAT_MODEL_OPTIONS:
+        if selected_model and selected_model not in OLLAMA_CHAT_MODEL_OPTIONS:
+            raise HTTPException(422, 'Unsupported Ollama model')
+        if not selected_model:
             selected_model = OLLAMA_CHAT_DEFAULT_MODEL
     elif selected_provider == 'groq':
-        if selected_model not in GROQ_MODEL_OPTIONS:
+        if selected_model and selected_model not in GROQ_MODEL_OPTIONS:
+            raise HTTPException(422, 'Unsupported Groq model')
+        if not selected_model:
             selected_model = GROQ_MODEL_OPTIONS[0]
+    elif selected_provider == 'gemini':
+        if selected_model and selected_model not in GEMINI_ALL_SUPPORTED_MODELS:
+            raise HTTPException(422, 'Unsupported Gemini model')
+        if not selected_model:
+            selected_model = GEMINI_DEFAULT_MODEL
     content = body.content.strip()
     if not content:
         raise HTTPException(422, 'Message cannot be empty')
@@ -858,8 +887,11 @@ async def send_chat_message(
         elif selected_provider == 'groq':
             answer = await provider.groq.generate_chat(ollama_system_prompt, user_prompt, model=selected_model)
             provider.last_provider = 'groq'
+        elif selected_provider == 'gemini':
+            answer = await provider.generate_chat(ollama_system_prompt, user_prompt, mode='gemini', model=selected_model)
+            provider.last_provider = 'gemini'
         else:
-            answer = await provider.generate(prompt, mode=selected_provider)
+            answer = await provider.generate(prompt, mode=selected_provider, model=selected_model)
         if not answer:
             raise InvalidAIResponse('Language model returned an empty response.')
     except (AIConfigurationError, AICloudError, AIUnavailable, InvalidAIResponse) as error:
@@ -871,7 +903,7 @@ async def send_chat_message(
     assistant = ChatMessage(
         conversation_id=conversation.id, role='assistant', content=answer,
         provider_used=provider.last_provider,
-        model_used=selected_model if provider.last_provider in {'ollama', 'groq'} else provider.gemini.model,
+        model_used=selected_model,
         generation_duration_ms=duration, status='complete',
     )
     if conversation.title == 'New study chat':
@@ -888,15 +920,20 @@ async def send_chat_message(
     }
 @app.post('/api/v1/assessments')
 async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s:Session=Depends(db)):
-    target_mode = body.provider_mode
+    target_mode = body.provider_mode or provider.mode
     if target_mode == 'auto':
         target_mode = 'gemini' if provider.gemini.api_key else 'ollama'
+    if target_mode not in {'gemini', 'ollama', 'groq'}:
+        raise HTTPException(422, 'Invalid AI provider')
     if target_mode == 'groq':
         if body.model and body.model not in GROQ_MODEL_OPTIONS:
             raise HTTPException(422, 'Unsupported Groq model')
     elif target_mode == 'ollama':
         if body.model and body.model not in OLLAMA_MODEL_OPTIONS:
             raise HTTPException(422, 'Unsupported Ollama model')
+    elif target_mode == 'gemini':
+        if body.model and body.model not in GEMINI_ALL_SUPPORTED_MODELS:
+            raise HTTPException(422, 'Unsupported Gemini model')
     generation_started=time.perf_counter()
     provider.fallback_used=False
     provider.last_request_count=0
@@ -968,7 +1005,7 @@ async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s
         try:
             generated=await provider.structured(prompt,GeneratedQuestions,mode=body.provider_mode, model=body.model)
             api_requests += getattr(provider, 'last_request_count', 1)
-        except AIUnavailable as e: raise HTTPException(503,str(e))
+        except (AIUnavailable, AICloudError, AIConfigurationError) as e: raise HTTPException(503,str(e))
         except InvalidAIResponse as e:
             logger.warning(
                 'assessment_generation_invalid_output user=%s concept=%s attempt=%s error=%s',

@@ -1196,10 +1196,18 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
       ? saved
       : 'openai/gpt-oss-20b'
   })
+  const [geminiModel, setGeminiModel] = useState(() => {
+    const saved = localStorage.remindChatGeminiModel
+    return ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'].includes(saved)
+      ? saved
+      : 'gemini-3.1-flash-lite'
+  })
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [groqModels, setGroqModels] = useState<OllamaModel[]>([])
+  const [geminiModels, setGeminiModels] = useState<OllamaModel[]>([])
   const [ollamaAvailable, setOllamaAvailable] = useState(true)
   const [groqAvailable, setGroqAvailable] = useState(true)
+  const [geminiAvailable, setGeminiAvailable] = useState(true)
   const [useMaterials, setUseMaterials] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -1230,6 +1238,12 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
         ? preferred
         : 'openai/gpt-oss-20b'
       setGroqModel(valid)
+    } else if (convProvider === 'gemini') {
+      const preferred = body.conversation.model_preference
+      const valid = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'].includes(preferred)
+        ? preferred
+        : 'gemini-3.1-flash-lite'
+      setGeminiModel(valid)
     } else {
       setOllamaModel(body.conversation.model_preference || 'qwen2.5:3b')
     }
@@ -1259,9 +1273,21 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
         }
         return current
       })
+      const gemini = body.providers?.find((item: { id: string }) => item.id === 'gemini')
+      const gModels = gemini?.models || []
+      setGeminiModels(gModels)
+      setGeminiAvailable(Boolean(gemini?.available))
+      setGeminiModel((current: string) => {
+        if (gModels.length && !gModels.some((m: { id: string }) => m.id === current)) {
+          localStorage.remindChatGeminiModel = gModels[0].id
+          return gModels[0].id
+        }
+        return current
+      })
     } catch {
       setOllamaAvailable(false)
       setGroqAvailable(false)
+      setGeminiAvailable(false)
     }
   }
   useEffect(() => { void loadProviders() }, [])
@@ -1286,7 +1312,7 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
     if (container) container.scrollTop = container.scrollHeight
   }, [messages, busy])
   const newChat = async () => {
-    const activeModel = providerMode === 'groq' ? groqModel : ollamaModel
+    const activeModel = providerMode === 'groq' ? groqModel : providerMode === 'gemini' ? geminiModel : ollamaModel
     const response = await fetch(API + '/chat/conversations', {
       method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider_preference: providerMode, model_preference: activeModel }),
@@ -1352,7 +1378,7 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
   const send = async (retryMessage?: { conversationId: number; content: string; messageId: number }) => {
     const content = (retryMessage?.content || draft).trim()
     if (!content || busy) return
-    const activeModel = providerMode === 'groq' ? groqModel : ollamaModel
+    const activeModel = providerMode === 'groq' ? groqModel : providerMode === 'gemini' ? geminiModel : ollamaModel
     let conversation = retryMessage
       ? conversations.find(item => item.id === retryMessage.conversationId) || active
       : active || conversations[0]
@@ -1533,6 +1559,27 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
                 )}
             </select>
             <button className="chat-refresh-models" type="button" onClick={() => { void loadProviders() }} title="Refresh Groq models" aria-label="Refresh Groq models"><RotateCw size={13} /></button>
+          </label>}
+          {providerMode === 'gemini' && <label className="chat-tool-select">Gemini model
+            <select
+              value={geminiModel}
+              onChange={event => {
+                setGeminiModel(event.target.value)
+                localStorage.remindChatGeminiModel = event.target.value
+              }}
+              aria-label="Gemini model"
+              disabled={!geminiAvailable}
+            >
+              {geminiModels.length
+                ? geminiModels.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)
+                : (
+                  <>
+                    <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
+                  </>
+                )}
+            </select>
+            <button className="chat-refresh-models" type="button" onClick={() => { void loadProviders() }} title="Refresh Gemini models" aria-label="Refresh Gemini models"><RotateCw size={13} /></button>
           </label>}
           <label className="chat-tool-toggle"><input type="checkbox" checked={useMaterials} onChange={event => setUseMaterials(event.target.checked)} /> <span>Use uploaded materials</span></label>
         </div>
@@ -2029,10 +2076,18 @@ function AssessmentsPage({
       ? saved
       : 'openai/gpt-oss-20b'
   })
+  const [geminiModel, setGeminiModel] = useState(() => {
+    const saved = localStorage.remindAssessmentGeminiModel
+    return ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite'].includes(saved)
+      ? saved
+      : 'gemini-3.1-flash-lite'
+  })
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
   const [groqModels, setGroqModels] = useState<OllamaModel[]>([])
+  const [geminiModels, setGeminiModels] = useState<OllamaModel[]>([])
   const [ollamaAvailable, setOllamaAvailable] = useState(true)
   const [groqAvailable, setGroqAvailable] = useState(true)
+  const [geminiAvailable, setGeminiAvailable] = useState(true)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
@@ -2065,10 +2120,22 @@ function AssessmentsPage({
           }
           return current
         })
+        const gemini = body?.providers?.find((item: { id: string }) => item.id === 'gemini')
+        const gModels = gemini?.models || []
+        setGeminiModels(gModels)
+        setGeminiAvailable(Boolean(gemini?.available))
+        setGeminiModel((current: string) => {
+          if (gModels.length && !gModels.some((m: { id: string }) => m.id === current)) {
+            localStorage.remindAssessmentGeminiModel = gModels[0].id
+            return gModels[0].id
+          }
+          return current
+        })
       })
       .catch(() => {
         setOllamaAvailable(false)
         setGroqAvailable(false)
+        setGeminiAvailable(false)
       })
   }, [])
 
@@ -2128,7 +2195,7 @@ function AssessmentsPage({
     setLoading(true)
     localStorage.remindProviderMode = providerMode
     setMessage(providerMode === 'gemini'
-      ? 'Generating questions with Gemini…'
+      ? `Generating questions with Gemini (${geminiModel})…`
       : providerMode === 'groq'
         ? `Generating questions with Groq (${groqModel})…`
         : `Generating questions locally with Ollama (${ollamaModel})…`)
@@ -2136,7 +2203,7 @@ function AssessmentsPage({
     setResponses({})
     setResults({})
     setQuestionTypesOpen(false)
-    const selectedModel = providerMode === 'ollama' ? ollamaModel : (providerMode === 'groq' ? groqModel : undefined)
+    const selectedModel = providerMode === 'ollama' ? ollamaModel : (providerMode === 'groq' ? groqModel : geminiModel)
     try {
       const r = await fetch(API + '/assessments', {
         method: 'POST',
@@ -2317,6 +2384,25 @@ function AssessmentsPage({
                   )}
               </select>
             </label>}
+            {providerMode === 'gemini' && <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
+              Gemini model:
+              <select
+                value={geminiModel}
+                onChange={event => { setGeminiModel(event.target.value); localStorage.remindAssessmentGeminiModel = event.target.value }}
+                disabled={loading || !!assessment || !geminiAvailable}
+                aria-label="Gemini model for assessment generation"
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
+              >
+                {geminiModels.length
+                  ? geminiModels.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)
+                  : (
+                    <>
+                      <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                      <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
+                    </>
+                  )}
+              </select>
+            </label>}
             <div className="assessment-type-picker" ref={questionTypesRef}>
               <button
                 type="button"
@@ -2365,7 +2451,7 @@ function AssessmentsPage({
               ? 'Local mode keeps your study material on this device.'
               : providerMode === 'gemini'
                 ? 'Cloud mode sends relevant study material to Gemini for generation.'
-                : 'Automatic mode prefers Gemini when configured and falls back to Ollama for temporary cloud failures.'}
+                : 'Cloud mode sends relevant study material to Groq for generation.'}
           </p>
 
           {currentConcept && (
