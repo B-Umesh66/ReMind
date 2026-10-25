@@ -196,9 +196,18 @@ function App() {
   }
 
   const authenticate = async (email: string, password: string, mode: 'login' | 'register') => {
-    const r = await fetch(API + `/auth/${mode === 'login' ? 'login' : 'register'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
-    const body = await r.json()
-    if (!r.ok) throw new Error(body.detail || 'Could not sign in.')
+    let r: Response
+    try {
+      r = await fetch(API + `/auth/${mode === 'login' ? 'login' : 'register'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      })
+    } catch {
+      throw new Error('Could not connect to the backend server. Please verify it is running on port 8000.')
+    }
+    const body = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(body.detail || `Server error (${r.status}). Please check backend service.`)
     localStorage.remindToken = body.access_token
     setToken(body.access_token)
     if (body.user) setUser(body.user)
@@ -1177,10 +1186,20 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
   const [active, setActive] = useState<ChatConversation | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
-  const [providerMode, setProviderMode] = useState('auto')
+  const [providerMode, setProviderMode] = useState<'ollama' | 'gemini' | 'groq'>(
+    (localStorage.remindChatProviderMode && localStorage.remindChatProviderMode !== 'auto') ? localStorage.remindChatProviderMode as 'ollama' | 'gemini' | 'groq' : 'ollama'
+  )
   const [ollamaModel, setOllamaModel] = useState('qwen2.5:3b')
+  const [groqModel, setGroqModel] = useState(() => {
+    const saved = localStorage.remindChatGroqModel
+    return ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b'].includes(saved)
+      ? saved
+      : 'openai/gpt-oss-20b'
+  })
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [groqModels, setGroqModels] = useState<OllamaModel[]>([])
   const [ollamaAvailable, setOllamaAvailable] = useState(true)
+  const [groqAvailable, setGroqAvailable] = useState(true)
   const [useMaterials, setUseMaterials] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -1203,8 +1222,17 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
     const body = await response.json()
     setActive(body.conversation)
     setMessages(body.messages)
-    setProviderMode(body.conversation.provider_preference)
-    setOllamaModel(body.conversation.model_preference || 'qwen2.5:3b')
+    const convProvider = (body.conversation.provider_preference === 'auto' ? 'ollama' : (body.conversation.provider_preference || 'ollama')) as 'ollama' | 'gemini' | 'groq'
+    setProviderMode(convProvider)
+    if (convProvider === 'groq') {
+      const preferred = body.conversation.model_preference
+      const valid = ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b'].includes(preferred)
+        ? preferred
+        : 'openai/gpt-oss-20b'
+      setGroqModel(valid)
+    } else {
+      setOllamaModel(body.conversation.model_preference || 'qwen2.5:3b')
+    }
     setRetryable(null)
     setCopiedMessageId(null)
     setError('')
@@ -1212,7 +1240,7 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
   useEffect(() => {
     loadConversations().catch(error => setError(error instanceof Error ? error.message : 'Could not load conversations.'))
   }, [])
-  const loadOllamaModels = async () => {
+  const loadProviders = async () => {
     try {
       const response = await fetch(API + '/chat/providers', { headers: headers() })
       if (!response.ok) return
@@ -1220,11 +1248,23 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
       const ollama = body.providers?.find((item: { id: string }) => item.id === 'ollama')
       setOllamaModels(ollama?.models || [])
       setOllamaAvailable(Boolean(ollama?.available))
+      const groq = body.providers?.find((item: { id: string }) => item.id === 'groq')
+      const models = groq?.models || []
+      setGroqModels(models)
+      setGroqAvailable(Boolean(groq?.available))
+      setGroqModel((current: string) => {
+        if (models.length && !models.some((m: { id: string }) => m.id === current)) {
+          localStorage.remindChatGroqModel = models[0].id
+          return models[0].id
+        }
+        return current
+      })
     } catch {
       setOllamaAvailable(false)
+      setGroqAvailable(false)
     }
   }
-  useEffect(() => { void loadOllamaModels() }, [])
+  useEffect(() => { void loadProviders() }, [])
   useEffect(() => {
     if (openConversationMenu === null) return
     const closeMenu = (event: MouseEvent) => {
@@ -1246,9 +1286,10 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
     if (container) container.scrollTop = container.scrollHeight
   }, [messages, busy])
   const newChat = async () => {
+    const activeModel = providerMode === 'groq' ? groqModel : ollamaModel
     const response = await fetch(API + '/chat/conversations', {
       method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider_preference: providerMode, model_preference: ollamaModel }),
+      body: JSON.stringify({ provider_preference: providerMode, model_preference: activeModel }),
     })
     if (!response.ok) throw new Error('Could not create a conversation.')
     const conversation = await response.json() as ChatConversation
@@ -1311,13 +1352,14 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
   const send = async (retryMessage?: { conversationId: number; content: string; messageId: number }) => {
     const content = (retryMessage?.content || draft).trim()
     if (!content || busy) return
+    const activeModel = providerMode === 'groq' ? groqModel : ollamaModel
     let conversation = retryMessage
       ? conversations.find(item => item.id === retryMessage.conversationId) || active
       : active || conversations[0]
     if (!conversation) {
       const response = await fetch(API + '/chat/conversations', {
         method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_preference: providerMode, model_preference: ollamaModel }),
+        body: JSON.stringify({ provider_preference: providerMode, model_preference: activeModel }),
       })
       if (!response.ok) { setError('Could not create a conversation.'); return }
       conversation = await response.json() as ChatConversation
@@ -1330,12 +1372,22 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
       const response = await fetch(API + `/chat/conversations/${conversation.id}/messages`, {
         method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          content, provider: providerMode, model: ollamaModel, use_materials: useMaterials,
+          content, provider: providerMode, model: activeModel, use_materials: useMaterials,
           retry_message_id: retryMessage?.messageId,
         }),
       })
       const body = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(body.detail || 'The assistant could not generate a response.')
+      if (!response.ok) {
+        let errorDetail = 'The assistant could not generate a response.'
+        if (typeof body.detail === 'string') {
+          errorDetail = body.detail
+        } else if (Array.isArray(body.detail)) {
+          errorDetail = body.detail.map((item: any) => item.msg || JSON.stringify(item)).join(', ')
+        } else if (body.detail) {
+          errorDetail = JSON.stringify(body.detail)
+        }
+        throw new Error(errorDetail)
+      }
       if (!retryMessage && body.user_message_id) {
         setMessages(items => {
           const lastUser = [...items].reverse().find(item => item.role === 'user' && item.content === content)
@@ -1440,10 +1492,18 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
         </div>
         <div className="chat-composer-tools">
           <label className="chat-tool-select">Provider
-            <select value={providerMode} onChange={event => setProviderMode(event.target.value)} aria-label="AI provider">
-              <option value="auto">Automatic</option>
+            <select
+              value={providerMode}
+              onChange={event => {
+                const mode = event.target.value as 'ollama' | 'gemini' | 'groq'
+                setProviderMode(mode)
+                localStorage.remindChatProviderMode = mode
+              }}
+              aria-label="AI provider"
+            >
               <option value="ollama">Ollama (local)</option>
               <option value="gemini">Gemini (cloud)</option>
+              <option value="groq">Groq (cloud)</option>
             </select>
           </label>
           {providerMode === 'ollama' && <label className="chat-tool-select">Local model
@@ -1451,7 +1511,28 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
             <select value={ollamaModel} onChange={event => setOllamaModel(event.target.value)} aria-label="Ollama model" disabled={!ollamaAvailable}>
               {ollamaModels.length ? ollamaModels.map(model => <option key={model.id} value={model.id} disabled={!model.installed}>{model.label}{model.installed ? '' : ' (not installed)'}</option>) : <option value={ollamaModel}>{ollamaAvailable ? 'Loading models…' : 'Ollama unavailable'}</option>}
             </select>
-            <button className="chat-refresh-models" type="button" onClick={() => { void loadOllamaModels() }} title="Refresh Ollama model availability" aria-label="Refresh Ollama model availability"><RotateCw size={13} /></button>
+            <button className="chat-refresh-models" type="button" onClick={() => { void loadProviders() }} title="Refresh Ollama model availability" aria-label="Refresh Ollama model availability"><RotateCw size={13} /></button>
+          </label>}
+          {providerMode === 'groq' && <label className="chat-tool-select">Groq model
+            <select
+              value={groqModel}
+              onChange={event => {
+                setGroqModel(event.target.value)
+                localStorage.remindChatGroqModel = event.target.value
+              }}
+              aria-label="Groq model"
+            >
+              {groqModels.length
+                ? groqModels.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)
+                : (
+                  <>
+                    <option value="openai/gpt-oss-20b">openai/gpt-oss-20b</option>
+                    <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b</option>
+                    <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
+                  </>
+                )}
+            </select>
+            <button className="chat-refresh-models" type="button" onClick={() => { void loadProviders() }} title="Refresh Groq models" aria-label="Refresh Groq models"><RotateCw size={13} /></button>
           </label>}
           <label className="chat-tool-toggle"><input type="checkbox" checked={useMaterials} onChange={event => setUseMaterials(event.target.checked)} /> <span>Use uploaded materials</span></label>
         </div>
@@ -1936,12 +2017,22 @@ function AssessmentsPage({
   const [results, setResults] = useState<Record<number, any>>({})
   const [questionCount, setQuestionCount] = useState(10)
   const [questionTypes, setQuestionTypes] = useState<Array<'multiple_choice' | 'true_false'>>(['multiple_choice'])
-  const [providerMode, setProviderMode] = useState<'auto' | 'gemini' | 'ollama'>(
-    (localStorage.remindProviderMode || 'auto') as 'auto' | 'gemini' | 'ollama'
+  const [providerMode, setProviderMode] = useState<'gemini' | 'ollama' | 'groq'>(
+    (localStorage.remindProviderMode && localStorage.remindProviderMode !== 'auto')
+      ? localStorage.remindProviderMode as 'gemini' | 'ollama' | 'groq'
+      : 'ollama'
   )
   const [ollamaModel, setOllamaModel] = useState(localStorage.remindAssessmentModel || 'qwen3:4b')
+  const [groqModel, setGroqModel] = useState(() => {
+    const saved = localStorage.remindAssessmentGroqModel
+    return ['openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b'].includes(saved)
+      ? saved
+      : 'openai/gpt-oss-20b'
+  })
   const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([])
+  const [groqModels, setGroqModels] = useState<OllamaModel[]>([])
   const [ollamaAvailable, setOllamaAvailable] = useState(true)
+  const [groqAvailable, setGroqAvailable] = useState(true)
   const [loading, setLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [message, setMessage] = useState('')
@@ -1963,8 +2054,22 @@ function AssessmentsPage({
         const ollama = body?.providers?.find((item: { id: string }) => item.id === 'ollama')
         setOllamaModels(ollama?.models || [])
         setOllamaAvailable(Boolean(ollama?.available))
+        const groq = body?.providers?.find((item: { id: string }) => item.id === 'groq')
+        const models = groq?.models || []
+        setGroqModels(models)
+        setGroqAvailable(Boolean(groq?.available))
+        setGroqModel((current: string) => {
+          if (models.length && !models.some((m: { id: string }) => m.id === current)) {
+            localStorage.remindAssessmentGroqModel = models[0].id
+            return models[0].id
+          }
+          return current
+        })
       })
-      .catch(() => setOllamaAvailable(false))
+      .catch(() => {
+        setOllamaAvailable(false)
+        setGroqAvailable(false)
+      })
   }, [])
 
   useEffect(() => {
@@ -2024,18 +2129,26 @@ function AssessmentsPage({
     localStorage.remindProviderMode = providerMode
     setMessage(providerMode === 'gemini'
       ? 'Generating questions with Gemini…'
-      : providerMode === 'ollama'
-        ? 'Generating questions locally with Ollama…'
-        : 'Generating questions with automatic provider selection…')
+      : providerMode === 'groq'
+        ? `Generating questions with Groq (${groqModel})…`
+        : `Generating questions locally with Ollama (${ollamaModel})…`)
     setAssessment(null)
     setResponses({})
     setResults({})
     setQuestionTypesOpen(false)
+    const selectedModel = providerMode === 'ollama' ? ollamaModel : (providerMode === 'groq' ? groqModel : undefined)
     try {
       const r = await fetch(API + '/assessments', {
         method: 'POST',
         headers: { ...headers(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ concept_id: selectedId, question_count: questionCount, question_types: questionTypes, difficulty: 'medium', provider_mode: providerMode, model: providerMode === 'ollama' ? ollamaModel : undefined })
+        body: JSON.stringify({
+          concept_id: selectedId,
+          question_count: questionCount,
+          question_types: questionTypes,
+          difficulty: 'medium',
+          provider_mode: providerMode,
+          model: selectedModel
+        })
       })
       const data = await r.json()
       if (r.ok) {
@@ -2156,7 +2269,7 @@ function AssessmentsPage({
               <select
                 value={providerMode}
                 onChange={e => {
-                  const mode = e.target.value as 'auto' | 'gemini' | 'ollama'
+                  const mode = e.target.value as 'gemini' | 'ollama' | 'groq'
                   setProviderMode(mode)
                   localStorage.remindProviderMode = mode
                 }}
@@ -2164,9 +2277,9 @@ function AssessmentsPage({
                 aria-label="AI provider for assessment generation"
                 style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
               >
-                <option value="auto">Automatic</option>
-                <option value="gemini">Gemini (cloud)</option>
                 <option value="ollama">Ollama (local)</option>
+                <option value="gemini">Gemini (cloud)</option>
+                <option value="groq">Groq (cloud)</option>
               </select>
             </label>
             {providerMode === 'ollama' && <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -2182,6 +2295,26 @@ function AssessmentsPage({
                 {ollamaModels.length
                   ? ollamaModels.map(model => <option key={model.id} value={model.id} disabled={!model.installed}>{model.label}{model.installed ? '' : ' (not installed)'}</option>)
                   : <option value={ollamaModel}>{ollamaAvailable ? 'Loading models…' : 'Ollama unavailable'}</option>}
+              </select>
+            </label>}
+            {providerMode === 'groq' && <label style={{ fontSize: 12, fontWeight: 700, display: 'flex', gap: 8, alignItems: 'center' }}>
+              Groq model:
+              <select
+                value={groqModel}
+                onChange={event => { setGroqModel(event.target.value); localStorage.remindAssessmentGroqModel = event.target.value }}
+                disabled={loading || !!assessment}
+                aria-label="Groq model for assessment generation"
+                style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
+              >
+                {groqModels.length
+                  ? groqModels.map(model => <option key={model.id} value={model.id}>{model.label || model.id}</option>)
+                  : (
+                    <>
+                      <option value="openai/gpt-oss-20b">openai/gpt-oss-20b</option>
+                      <option value="qwen/qwen3.8-27b">qwen/qwen3.8-27b</option>
+                      <option value="openai/gpt-oss-120b">openai/gpt-oss-120b</option>
+                    </>
+                  )}
               </select>
             </label>}
             <div className="assessment-type-picker" ref={questionTypesRef}>

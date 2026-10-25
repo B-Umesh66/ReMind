@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import httpx
+
 from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 
@@ -22,6 +23,8 @@ T = TypeVar('T', bound=BaseModel)
 OLLAMA_MODEL_OPTIONS = ('qwen3:4b', 'qwen2.5:3b')
 OLLAMA_CHAT_MODEL_OPTIONS = ('qwen2.5:3b', 'qwen3:4b')
 OLLAMA_CHAT_DEFAULT_MODEL = 'qwen2.5:3b'
+GROQ_MODEL_OPTIONS = ('openai/gpt-oss-20b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-120b')
+
 
 def parse_structured(text: str, schema: type[T]) -> T:
     candidate=re.sub(r'<think>.*?</think>', '', text, flags=re.S).strip()
@@ -248,19 +251,36 @@ class OllamaProvider:
 
 class GeminiProvider:
     def __init__(self):
-        self.api_key=os.getenv('GEMINI_API_KEY','').strip()
-        self.model=os.getenv('GEMINI_MODEL','gemini-2.0-flash')
-        self.timeout=float(os.getenv('GEMINI_TIMEOUT_SECONDS','120'))
-        self.retry_attempts=max(1, int(os.getenv('GEMINI_RETRY_ATTEMPTS','2')))
-        self._client=None
-        self.last_request_count=0
+        self._api_key = os.getenv('GEMINI_API_KEY', '').strip()
+        self.model = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+        self.timeout = float(os.getenv('GEMINI_TIMEOUT_SECONDS', '120'))
+        self.retry_attempts = max(1, int(os.getenv('GEMINI_RETRY_ATTEMPTS', '2')))
+        self._client = None
+        self.last_request_count = 0
+
+    @property
+    def api_key(self) -> str:
+        key = os.getenv('GEMINI_API_KEY', '').strip()
+        if not key:
+            dotenv_path = Path(__file__).resolve().parents[1] / '.env'
+            if dotenv_path.is_file():
+                load_dotenv(dotenv_path, override=True)
+                key = os.getenv('GEMINI_API_KEY', '').strip()
+        return key or self._api_key
+
+    @api_key.setter
+    def api_key(self, value: str):
+        self._api_key = value.strip() if isinstance(value, str) else ''
+        self._client = None
+
     def _get_client(self):
-        if not self.api_key: raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
+        key = self.api_key
+        if not key: raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
         if self._client is None:
             try:
                 from google import genai
                 from google.genai import types
-                self._client=genai.Client(api_key=self.api_key, http_options=types.HttpOptions(timeout=int(self.timeout*1000)))
+                self._client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(self.timeout*1000)))
             except ImportError as e: raise AIConfigurationError('Gemini support requires the google-genai package.') from e
         return self._client
     @staticmethod
@@ -306,14 +326,120 @@ class GeminiProvider:
     async def structured(self, prompt:str, schema:type[T])->T:
         return parse_structured(await self.generate(prompt, schema.model_json_schema()), schema)
 
+class GroqProvider:
+    """OpenAI‑compatible client for Groq API."""
+    def __init__(self):
+        self.base = os.getenv('GROQ_API_BASE', 'https://api.groq.com/openai/v1').rstrip('/')
+        self._api_key = os.getenv('GROQ_API_KEY', '').strip()
+        self.timeout = float(os.getenv('GROQ_TIMEOUT_SECONDS', '120'))
+        self.retry_attempts = max(1, int(os.getenv('GROQ_RETRY_ATTEMPTS', '2')))
+        self.last_request_count = 0
+
+    @property
+    def api_key(self) -> str:
+        key = os.getenv('GROQ_API_KEY', '').strip()
+        if not key:
+            dotenv_path = Path(__file__).resolve().parents[1] / '.env'
+            if dotenv_path.is_file():
+                load_dotenv(dotenv_path, override=True)
+                key = os.getenv('GROQ_API_KEY', '').strip()
+        return key or self._api_key
+
+    @api_key.setter
+    def api_key(self, value: str):
+        self._api_key = value.strip() if isinstance(value, str) else ''
+
+    async def _post(self, endpoint: str, payload: dict) -> dict:
+        key = self.api_key
+        if not key:
+            raise AIConfigurationError('Groq is not configured. Set GROQ_API_KEY in backend/.env.')
+        headers = {'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'}
+        for attempt in range(self.retry_attempts):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(f'{self.base}{endpoint}', json=payload, headers=headers)
+                    if response.status_code >= 500:
+                        raise AICloudError(f'Groq server error {response.status_code}', retryable=True)
+                    if response.status_code == 401:
+                        raise AIConfigurationError('Groq authentication failed. Check GROQ_API_KEY.')
+                    response.raise_for_status()
+                    return response.json()
+            except (AIConfigurationError, InvalidAIResponse):
+                raise
+            except AICloudError as e:
+                if not e.retryable or attempt + 1 >= self.retry_attempts:
+                    raise
+                await asyncio.sleep(1)
+            except httpx.HTTPError as e:
+                if attempt + 1 >= self.retry_attempts:
+                    raise AIUnavailable(f'Groq request failed: {e}') from e
+                await asyncio.sleep(1)
+        raise AIUnavailable('Groq request failed after retry attempts.')
+
+    async def generate(self, prompt: str, output_format: dict | str | None = None, model: str | None = None) -> str:
+        selected = model or os.getenv('GROQ_DEFAULT_MODEL', GROQ_MODEL_OPTIONS[0])
+        payload = {
+            'model': selected,
+            'messages': [{'role': 'user', 'content': prompt}],
+            'temperature': float(os.getenv('GROQ_TEMPERATURE', '0.2'))
+        }
+        if output_format is not None:
+            payload['response_format'] = output_format
+        self.last_request_count = 1
+        body = await self._post('/chat/completions', payload)
+        try:
+            content = body['choices'][0]['message']['content']
+        except (KeyError, IndexError):
+            raise InvalidAIResponse('Groq returned an unexpected response format.')
+        if not isinstance(content, str) or not content.strip():
+            raise InvalidAIResponse('Groq returned an empty response.')
+        return content.strip()
+
+    async def generate_chat(self, system_prompt: str, user_prompt: str, model: str | None = None) -> str:
+        selected = model or os.getenv('GROQ_DEFAULT_MODEL', GROQ_MODEL_OPTIONS[0])
+        payload = {
+            'model': selected,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            'temperature': float(os.getenv('GROQ_TEMPERATURE', '0.2'))
+        }
+        self.last_request_count = 1
+        body = await self._post('/chat/completions', payload)
+        try:
+            content = body['choices'][0]['message']['content']
+        except (KeyError, IndexError):
+            raise InvalidAIResponse('Groq chat returned an unexpected response format.')
+        if not isinstance(content, str) or not content.strip():
+            raise InvalidAIResponse('Groq chat returned an empty response.')
+        return content.strip()
+
+    async def structured(self, prompt: str, schema: type[T], model: str | None = None) -> T:
+        selected = model or os.getenv('GROQ_DEFAULT_MODEL', GROQ_MODEL_OPTIONS[0])
+        payload = {
+            'model': selected,
+            'messages': [{'role': 'user', 'content': prompt + '\n\nReturn the JSON object required by the schema.'}],
+            'temperature': 0.0,
+        }
+        self.last_request_count = 1
+        body = await self._post('/chat/completions', payload)
+        try:
+            content = body['choices'][0]['message']['content']
+        except (KeyError, IndexError):
+            raise InvalidAIResponse('Groq structured response missing.')
+        return parse_structured(content, schema)
+
 class HybridAIProvider:
-    def __init__(self, ollama: OllamaProvider, gemini: GeminiProvider):
-        self.ollama=ollama
-        self.gemini=gemini
-        self.mode=os.getenv('AI_PROVIDER_MODE','auto').strip().lower()
-        if self.mode not in {'auto','gemini','ollama'}: raise AIConfigurationError('AI_PROVIDER_MODE must be auto, gemini, or ollama.')
-        self.last_provider='ollama'
-        self.fallback_used=False
+    def __init__(self, ollama: OllamaProvider, gemini: GeminiProvider, groq: GroqProvider | None = None):
+        self.ollama = ollama
+        self.gemini = gemini
+        self.groq = groq if groq is not None else GroqProvider()
+        self.mode = os.getenv('AI_PROVIDER_MODE', 'ollama').strip().lower()
+        if self.mode not in {'gemini', 'ollama', 'groq', 'auto'}:
+            raise AIConfigurationError('AI_PROVIDER_MODE must be gemini, ollama, or groq.')
+        self.last_provider = 'ollama'
+        self.fallback_used = False
     @property
     def llm(self): return self.ollama.llm
     @property
@@ -322,64 +448,122 @@ class HybridAIProvider:
     async def embed(self, text:str): return await self.ollama.embed(text)
     def _selected_mode(self, mode: str | None) -> str:
         selected = (mode or self.mode).strip().lower()
-        if selected not in {'auto', 'gemini', 'ollama'}:
-            raise AIConfigurationError('AI provider mode must be auto, gemini, or ollama.')
+        if selected not in {'gemini', 'ollama', 'groq', 'auto'}:
+            raise AIConfigurationError('AI provider mode must be gemini, ollama, or groq.')
         return selected
-    async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None, *, mode: str | None = None)->str:
+    async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None, *, mode: str | None = None, model: str | None = None)->str:
         selected = self._selected_mode(mode)
         if selected=='ollama':
-            self.last_provider='ollama'; result=await self.ollama.generate(prompt, output_format); self.last_request_count=getattr(self.ollama, 'last_request_count', 1); return result
+            self.last_provider='ollama'
+            result = await (self.ollama.generate(prompt, output_format, model=model) if model else self.ollama.generate(prompt, output_format))
+            self.last_request_count = getattr(self.ollama, 'last_request_count', 1)
+            return result
         if selected=='gemini':
-            if not self.gemini.api_key: raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
-            self.last_provider='gemini'; result=await self.gemini.generate(prompt, output_format); self.last_request_count=getattr(self.gemini, 'last_request_count', 1); return result
+            if not self.gemini.api_key:
+                raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
+            self.last_provider='gemini'
+            result = await self.gemini.generate(prompt, output_format)
+            self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
+            return result
+        if selected=='groq':
+            self.last_provider='groq'
+            result = await self.groq.generate(prompt, output_format, model=model)
+            self.last_request_count = getattr(self.groq, 'last_request_count', 1)
+            return result
+        # 'auto' mode fallback
         if not self.gemini.api_key:
-            self.last_provider='ollama'; result=await self.ollama.generate(prompt, output_format); self.last_request_count=getattr(self.ollama, 'last_request_count', 1); return result
+            self.last_provider='ollama'
+            result = await (self.ollama.generate(prompt, output_format, model=model) if model else self.ollama.generate(prompt, output_format))
+            self.last_request_count = getattr(self.ollama, 'last_request_count', 1)
+            return result
         try:
-            result=await self.gemini.generate(prompt, output_format); self.last_provider='gemini'; self.last_request_count=getattr(self.gemini, 'last_request_count', 1); return result
+            self.last_provider='gemini'
+            result = await self.gemini.generate(prompt, output_format)
+            self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
+            return result
         except AICloudError as e:
             if not e.retryable: raise
             logger.warning('gemini_fallback reason=%s', str(e))
             self.fallback_used=True
             gemini_requests=getattr(self.gemini, 'last_request_count', 1)
-            result=await self.ollama.generate(prompt, output_format); self.last_provider='ollama'; self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1); return result
-    async def generate_chat(self, system_prompt: str, user_prompt: str, *, mode: str | None = None) -> str:
+            result = await (self.ollama.generate(prompt, output_format, model=model) if model else self.ollama.generate(prompt, output_format))
+            self.last_provider='ollama'
+            self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1)
+            return result
+
+    async def generate_chat(self, system_prompt: str, user_prompt: str, *, mode: str | None = None, model: str | None = None) -> str:
         selected = self._selected_mode(mode)
         if selected == 'ollama':
             self.last_provider = 'ollama'
+            if model:
+                return await self.ollama.generate_chat_with_model(system_prompt, user_prompt, model)
             return await self.ollama.generate_chat(system_prompt, user_prompt)
         if selected == 'gemini':
             if not self.gemini.api_key:
                 raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
             self.last_provider = 'gemini'
             return await self.gemini.generate(user_prompt)
+        if selected == 'groq':
+            self.last_provider = 'groq'
+            return await self.groq.generate_chat(system_prompt, user_prompt, model=model)
+        # 'auto' mode
         if not self.gemini.api_key:
             self.last_provider = 'ollama'
+            if model:
+                return await self.ollama.generate_chat_with_model(system_prompt, user_prompt, model)
             return await self.ollama.generate_chat(system_prompt, user_prompt)
         self.last_provider = 'gemini'
         return await self.gemini.generate(user_prompt)
+
     async def structured(self, prompt:str, schema:type[T], *, mode: str | None = None, model: str | None = None)->T:
         selected = self._selected_mode(mode)
         if selected=='ollama':
-            self.last_provider='ollama'; result=await self.ollama.structured(prompt, schema, model=model); self.last_request_count=getattr(self.ollama, 'last_request_count', 1); return result
+            self.last_provider='ollama'
+            result = await (self.ollama.structured(prompt, schema, model=model) if model else self.ollama.structured(prompt, schema))
+            self.last_request_count = getattr(self.ollama, 'last_request_count', 1)
+            return result
         if selected=='gemini':
-            if not self.gemini.api_key: raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
-            self.last_provider='gemini'; result=await self.gemini.structured(prompt, schema); self.last_request_count=getattr(self.gemini, 'last_request_count', 1); return result
+            if not self.gemini.api_key:
+                raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
+            self.last_provider='gemini'
+            result = await self.gemini.structured(prompt, schema)
+            self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
+            return result
+        if selected=='groq':
+            self.last_provider='groq'
+            result = await self.groq.structured(prompt, schema, model=model)
+            self.last_request_count = getattr(self.groq, 'last_request_count', 1)
+            return result
+        # 'auto' mode
         if not self.gemini.api_key:
-            self.last_provider='ollama'; result=await self.ollama.structured(prompt, schema); self.last_request_count=getattr(self.ollama, 'last_request_count', 1); return result
+            self.last_provider='ollama'
+            result = await (self.ollama.structured(prompt, schema, model=model) if model else self.ollama.structured(prompt, schema))
+            self.last_request_count = getattr(self.ollama, 'last_request_count', 1)
+            return result
         try:
-            result=await self.gemini.structured(prompt, schema); self.last_provider='gemini'; self.last_request_count=getattr(self.gemini, 'last_request_count', 1); return result
+            result = await self.gemini.structured(prompt, schema)
+            self.last_provider='gemini'
+            self.last_request_count = getattr(self.gemini, 'last_request_count', 1)
+            return result
         except AICloudError as e:
             if not e.retryable: raise
             logger.warning('gemini_fallback reason=%s', str(e))
             self.fallback_used=True
             gemini_requests=getattr(self.gemini, 'last_request_count', 1)
-            result=await self.ollama.structured(prompt, schema); self.last_provider='ollama'; self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1); return result
-        except InvalidAIResponse as e:
+            result = await (self.ollama.structured(prompt, schema, model=model) if model else self.ollama.structured(prompt, schema))
+            self.last_provider='ollama'
+            self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1)
+            return result
+        except InvalidAIResponse:
             logger.warning('gemini_fallback reason=invalid_structured_output')
             self.fallback_used=True
             gemini_requests=getattr(self.gemini, 'last_request_count', 1)
-            result=await self.ollama.structured(prompt, schema); self.last_provider='ollama'; self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1); return result
+            result = await (self.ollama.structured(prompt, schema, model=model) if model else self.ollama.structured(prompt, schema))
+            self.last_provider='ollama'
+            self.last_request_count=gemini_requests + getattr(self.ollama, 'last_request_count', 1)
+            return result
 
 ollama_provider=OllamaProvider()
 gemini_provider=GeminiProvider()
-provider=HybridAIProvider(ollama_provider, gemini_provider)
+groq_provider=GroqProvider()
+provider=HybridAIProvider(ollama_provider, gemini_provider, groq_provider)
