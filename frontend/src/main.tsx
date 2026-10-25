@@ -33,7 +33,7 @@ const demo: Dashboard = { documents: 0, processed_documents: 0, concepts: 0, ass
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: boolean }> {
   state = { error: false }; static getDerivedStateFromError() { return { error: true } }
-  render() { return this.state.error ? <main className="gate"><div className="logo"><span><i>r</i></span> ReMind</div><h1>Something prevented<br /><i>the interface from loading.</i></h1><p className="lead">Please refresh this page. If it persists, start the frontend with <code>npm run dev</code> from the frontend folder.</p></main> : this.props.children }
+  render() { return this.state.error ? <main className="gate"><div className="logo"><img src="/icon.png" alt="ReMind" className="brand-logo" /> ReMind</div><h1>Something prevented<br /><i>the interface from loading.</i></h1><p className="lead">Please refresh this page. If it persists, start the frontend with <code>npm run dev</code> from the frontend folder.</p></main> : this.props.children }
 }
 
 type FontScale = 'sm' | 'md' | 'lg' | 'xl'
@@ -271,7 +271,7 @@ function App() {
   return (
     <div className={`app${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       <aside className={`${drawer ? 'open ' : ''}${sidebarCollapsed ? 'collapsed' : ''}`}>
-        <div className="brand"><span><i>r</i></span><b>ReMind</b></div>
+        <div className="brand"><img src="/icon.png" alt="ReMind" className="brand-logo" /><b>ReMind</b></div>
         <button
           className="sidebar-toggle"
           onClick={() => setSidebarCollapsed(collapsed => !collapsed)}
@@ -1142,7 +1142,7 @@ function LoginPage({ authenticate }: { authenticate: (email: string, password: s
     <main className="auth-page">
       <div className="gate-orb"></div>
       <section className="auth-copy">
-        <div className="logo"><span><i>r</i></span> ReMind</div>
+        <div className="logo"><img src="/icon.png" alt="ReMind" className="brand-logo" /> ReMind</div>
         <p className="eyebrow">THE PERSONAL LEARNING SYSTEM</p>
         <h1>Make your knowledge<br /><i>stay with you.</i></h1>
         <p className="lead">A private study space that brings the right ideas back at the right moment.</p>

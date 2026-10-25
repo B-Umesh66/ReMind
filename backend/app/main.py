@@ -1254,7 +1254,27 @@ def revise(revision_id:int,body:RevisionUpdate,u:User=Depends(current_user),s:Se
 # During frontend development, use Vite at http://localhost:5173 instead.
 WEB_DIST=ROOT/'frontend'/'dist'
 if (WEB_DIST/'assets').exists(): app.mount('/assets',StaticFiles(directory=WEB_DIST/'assets'),name='web-assets')
+
+@app.get('/favicon.ico', include_in_schema=False)
+def get_favicon_ico():
+    for p in [WEB_DIST / 'favicon.ico', ROOT / 'frontend' / 'public' / 'favicon.ico']:
+        if p.exists(): return FileResponse(p)
+    raise HTTPException(404, 'Favicon not found')
+
+@app.get('/favicon.png', include_in_schema=False)
+def get_favicon_png():
+    for p in [WEB_DIST / 'favicon.png', ROOT / 'frontend' / 'public' / 'favicon.png']:
+        if p.exists(): return FileResponse(p)
+    raise HTTPException(404, 'Favicon not found')
+
+@app.get('/icon.png', include_in_schema=False)
+def get_icon_png():
+    for p in [WEB_DIST / 'icon.png', ROOT / 'frontend' / 'public' / 'icon.png']:
+        if p.exists(): return FileResponse(p)
+    raise HTTPException(404, 'Icon not found')
+
 @app.get('/', include_in_schema=False)
 def web_root():
     if (WEB_DIST/'index.html').exists(): return FileResponse(WEB_DIST/'index.html')
     return {'message':'Frontend is not built. Run npm run build in frontend, or npm run dev and open http://localhost:5173.'}
+

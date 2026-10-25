@@ -276,6 +276,8 @@ aside{width:256px;background:var(--bg-aside);color:var(--text-aside);display:fle
 .sidebar-collapsed .sidebar-toggle{position:static;margin:14px auto 0}
 .brand span,.logo span{font-family:'Playfair Display';font-style:italic;background:#d9fb87;color:#1d2927;width:28px;height:28px;border-radius:9px;display:grid;place-items:center;flex-shrink:0;line-height:1}
 .brand span i,.logo span i{position:relative;top:-1px}
+.brand-logo,.brand img,.logo img{width:32px;height:32px;aspect-ratio:1/1;object-fit:contain;flex-shrink:0;display:block;filter:drop-shadow(0 2px 5px rgba(0,0,0,0.25));transition:transform .2s ease}
+.brand:hover .brand-logo,.logo:hover .brand-logo{transform:scale(1.06)}
 .workspace-container{position:relative;margin:32px 5px 22px}
 .workspace{width:100%;margin:0;padding:10px 12px;background:var(--bg-aside-ws);border:1px solid var(--border-aside);border-radius:12px;display:flex;align-items:center;gap:10px;font-size:var(--fs-sm);color:var(--text-aside);cursor:pointer;text-align:left;transition:all .18s;font-family:inherit}
 .workspace:hover,.workspace.active{background:var(--bg-aside-hover);border-color:#486358;box-shadow:0 4px 16px rgba(0,0,0,0.25)}

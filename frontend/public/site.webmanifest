@@ -1,0 +1,21 @@
+{
+  "name": "ReMind — Learn what lasts",
+  "short_name": "ReMind",
+  "description": "Local-first adaptive learning and spaced repetition platform",
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "/icon-512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#1d2927",
+  "background_color": "#1d2927"
+}

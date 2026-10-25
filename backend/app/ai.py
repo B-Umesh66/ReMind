@@ -281,27 +281,27 @@ class GeminiProvider:
 
     @property
     def api_key(self) -> str:
+        dotenv_path = Path(__file__).resolve().parents[1] / '.env'
+        if dotenv_path.is_file():
+            load_dotenv(dotenv_path, override=True)
         key = os.getenv('GEMINI_API_KEY', '').strip()
-        if not key:
-            dotenv_path = Path(__file__).resolve().parents[1] / '.env'
-            if dotenv_path.is_file():
-                load_dotenv(dotenv_path, override=True)
-                key = os.getenv('GEMINI_API_KEY', '').strip()
         return key or self._api_key
 
     @api_key.setter
     def api_key(self, value: str):
         self._api_key = value.strip() if isinstance(value, str) else ''
         self._client = None
+        self._client_key = None
 
     def _get_client(self):
         key = self.api_key
         if not key: raise AIConfigurationError('Gemini is not configured. Set GEMINI_API_KEY in the backend environment.')
-        if self._client is None:
+        if self._client is None or getattr(self, '_client_key', None) != key:
             try:
                 from google import genai
                 from google.genai import types
                 self._client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=int(self.timeout*1000)))
+                self._client_key = key
             except ImportError as e: raise AIConfigurationError('Gemini support requires the google-genai package.') from e
         return self._client
 
@@ -349,6 +349,7 @@ class GeminiProvider:
                 return text.strip()
             except InvalidAIResponse: raise
             except Exception as error:
+                logger.exception('gemini_raw_error model=%s error=%r', selected_model, error)
                 cloud_error=self._error(error, selected_model)
                 if not cloud_error.retryable or attempt + 1 >= self.retry_attempts:
                     raise cloud_error from error
