@@ -49,7 +49,8 @@ function applyTheme(theme: 'light' | 'dark') { document.documentElement.setAttri
 function applyScale(scale: FontScale) { document.documentElement.setAttribute('data-fscale', scale) }
 
 function App() {
-  const [token, setToken] = useState(localStorage.remindToken || '')
+  const [token, setToken] = useState(() => localStorage.getItem('remindToken') || '')
+  const [authChecking, setAuthChecking] = useState(() => Boolean(localStorage.getItem('remindToken')))
   const [user, setUser] = useState<UserProfile | null>(null)
   const [data, setData] = useState<Dashboard>(demo)
   const [tab, setTab] = useState('Overview')
@@ -61,6 +62,27 @@ function App() {
   const [appAlert, setAppAlert] = useState<AppAlertState | null>(null)
   const [assessmentToOpenId, setAssessmentToOpenId] = useState<number | null>(null)
   const [selectedConceptId, setSelectedConceptId] = useState<number | null>(null)
+  const [activeAssessment, setActiveAssessment] = useState<any>(() => {
+    try {
+      const saved = localStorage.remindUnsubmittedAssessment
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        return parsed.assessment || null
+      }
+    } catch {}
+    return null
+  })
+  const [activeResponses, setActiveResponses] = useState<Record<number, string>>(() => {
+    try {
+      const saved = localStorage.remindUnsubmittedAssessment
+      if (saved) {
+        const parsed = JSON.parse(saved)
+        return parsed.responses || {}
+      }
+    } catch {}
+    return {}
+  })
+  const [activeResults, setActiveResults] = useState<Record<number, any>>({})
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [profileModalOpen, setProfileModalOpen] = useState(false)
@@ -72,6 +94,20 @@ function App() {
   const file = useRef<HTMLInputElement>(null)
   const workspaceRef = useRef<HTMLDivElement>(null)
   const settingsRef = useRef<HTMLDivElement>(null)
+
+  // Persist unsubmitted assessments across tab switches and refreshes
+  useEffect(() => {
+    if (activeAssessment && Object.keys(activeResults).length === 0) {
+      try {
+        localStorage.remindUnsubmittedAssessment = JSON.stringify({
+          assessment: activeAssessment,
+          responses: activeResponses
+        })
+      } catch {}
+    } else {
+      localStorage.removeItem('remindUnsubmittedAssessment')
+    }
+  }, [activeAssessment, activeResponses, activeResults])
 
   useEffect(() => {
     if (!uploadStatus || uploadStatus.state === 'uploading' || uploadStatus.state === 'info') return
@@ -106,34 +142,91 @@ function App() {
   }, [appAlert])
 
   const toggleTheme = () => setTheme(t => t === 'light' ? 'dark' : 'light')
+
+  const navigateToTab = (nextTab: string) => {
+    setTab(nextTab)
+    if (nextTab === 'AI Study Assistant') setChatSessionKey(key => key + 1)
+    if (nextTab === 'Assessments') {
+      setAppAlert(null)
+      const pendingId = Number(localStorage.remindPendingAssessmentId)
+      if (Number.isInteger(pendingId) && pendingId > 0) setAssessmentToOpenId(pendingId)
+    }
+    if (nextTab !== 'Assessments') {
+      // If assessment was submitted, clean it up so old results do not linger
+      if (Object.keys(activeResults).length > 0) {
+        setActiveAssessment(null)
+        setActiveResponses({})
+        setActiveResults({})
+      }
+      // If it was not submitted, activeAssessment and activeResponses are preserved!
+      setAssessmentToOpenId(null)
+    }
+    setDrawer(false)
+    setSettingsOpen(false)
+  }
+
   const openFreshAssistant = () => {
     setAppAlert(null)
-    setChatSessionKey(key => key + 1)
-    setTab('AI Study Assistant')
-    setDrawer(false)
+    navigateToTab('AI Study Assistant')
   }
 
   const headers = () => ({ Authorization: `Bearer ${token}` })
 
-  const load = async () => {
-    if (!token) return
+  const handleSignOut = () => {
+    localStorage.removeItem('remindToken')
+    localStorage.removeItem('remindUnsubmittedAssessment')
+    localStorage.removeItem('remindPendingAssessmentId')
+    setActiveAssessment(null)
+    setActiveResponses({})
+    setActiveResults({})
+    setToken('')
+    setUser(null)
+    setAuthChecking(false)
+    setProfileMenuOpen(false)
+    setProfileModalOpen(false)
+  }
+
+  const load = async (activeToken = token) => {
+    if (!activeToken) return
     try {
-      const r = await fetch(API + '/dashboard', { headers: headers() })
+      const r = await fetch(API + '/dashboard', { headers: { Authorization: `Bearer ${activeToken}` } })
+      if (r.status === 401) {
+        handleSignOut()
+        return
+      }
       if (r.ok) setData(await r.json())
     } catch { }
   }
 
-  const loadUser = async () => {
-    if (!token) return
+  const loadUser = async (activeToken = token) => {
+    if (!activeToken) {
+      setUser(null)
+      setAuthChecking(false)
+      return
+    }
     try {
-      const r = await fetch(API + '/auth/me', { headers: headers() })
-      if (r.ok) setUser(await r.json())
-    } catch { }
+      const r = await fetch(API + '/auth/me', { headers: { Authorization: `Bearer ${activeToken}` } })
+      if (r.status === 401) {
+        handleSignOut()
+        return
+      }
+      if (r.ok) {
+        const u = await r.json()
+        setUser(u)
+      }
+    } catch { } finally {
+      setAuthChecking(false)
+    }
   }
 
   useEffect(() => {
-    load()
-    loadUser()
+    if (!token) {
+      setUser(null)
+      setAuthChecking(false)
+      return
+    }
+    load(token)
+    loadUser(token)
   }, [token])
 
   useEffect(() => {
@@ -160,13 +253,6 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [settingsOpen])
 
-  const handleSignOut = () => {
-    localStorage.removeItem('remindToken')
-    setToken('')
-    setUser(null)
-    setProfileMenuOpen(false)
-    setProfileModalOpen(false)
-  }
 
   const rebuild = async (notify = true) => {
     if (!token || rebuilding) return
@@ -190,9 +276,14 @@ function App() {
 
   const startAssessmentForConcept = (cid: number) => {
     setSelectedConceptId(cid)
+    if (activeAssessment && (activeAssessment.concept_id !== cid || Object.keys(activeResults).length > 0)) {
+      setActiveAssessment(null)
+      setActiveResponses({})
+      setActiveResults({})
+    }
     setAssessmentToOpenId(null)
     localStorage.removeItem('remindPendingAssessmentId')
-    setTab('Assessments')
+    navigateToTab('Assessments')
   }
 
   const authenticate = async (email: string, password: string, mode: 'login' | 'register') => {
@@ -262,6 +353,19 @@ function App() {
   }
 
   const nav = ['Overview', 'My Library', 'Knowledge Map', 'AI Study Assistant', 'Assessments', 'Revision Center', 'Analytics']
+  if (authChecking) {
+    return (
+      <main className="gate" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+        <div className="gate-orb"></div>
+        <div className="logo" style={{ marginBottom: 16 }}>
+          <img src="/icon.png" alt="ReMind" className="brand-logo" /> ReMind
+        </div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, color: 'var(--text-secondary)', fontSize: 14 }}>
+          <RotateCw size={16} className="spin" /> Verifying session…
+        </div>
+      </main>
+    )
+  }
   if (!token) return <LoginPage authenticate={authenticate} />
   const shared = { token, headers, refresh: load, documentsRefreshKey }
 
@@ -364,18 +468,7 @@ function App() {
           {nav.map((n, i) => {
             const I = [Grid2X2, Library, BrainCircuit, MessageCircle, BookOpen, Target, ChartNoAxesCombined][i]
             return (
-              <button key={n} className={tab === n ? 'selected' : ''} onClick={() => {
-                setTab(n)
-                if (n === 'AI Study Assistant') setChatSessionKey(key => key + 1)
-                if (n === 'Assessments') {
-                  setAppAlert(null)
-                  const pendingId = Number(localStorage.remindPendingAssessmentId)
-                  if (Number.isInteger(pendingId) && pendingId > 0) setAssessmentToOpenId(pendingId)
-                }
-                if (n !== 'Assessments') setAssessmentToOpenId(null)
-                setDrawer(false)
-                setSettingsOpen(false)
-              }}>
+              <button key={n} className={tab === n ? 'selected' : ''} onClick={() => navigateToTab(n)}>
                 <I size={18} />
                 <span>{n}</span>
                 {n === 'Revision Center' && data.recommendations.length > 0 ? <em>{data.recommendations.length}</em> : null}
@@ -475,13 +568,18 @@ function App() {
                   setAppAlert(null)
                   setAssessmentToOpenId(assessmentId)
                   localStorage.removeItem('remindPendingAssessmentId')
-                  setTab('Assessments')
-                  setDrawer(false)
+                  navigateToTab('Assessments')
                 }
               })
             }}
             onCloseAssessment={() => setAssessmentToOpenId(null)}
             assessmentToOpenId={assessmentToOpenId}
+            assessment={activeAssessment}
+            setAssessment={setActiveAssessment}
+            responses={activeResponses}
+            setResponses={setActiveResponses}
+            results={activeResults}
+            setResults={setActiveResults}
           />
         ) : tab === 'Revision Center' ? (
           <RevisionCenterPage
@@ -506,11 +604,7 @@ function App() {
         initialTab={profileModalTab}
         dashboardData={data}
         onSignOut={handleSignOut}
-        onNavigateTab={t => {
-          setTab(t)
-          if (t !== 'Assessments') setAssessmentToOpenId(null)
-          setDrawer(false)
-        }}
+        onNavigateTab={t => navigateToTab(t)}
       />
       {appAlert && (
         <AppAlert
@@ -2048,20 +2142,32 @@ function AssessmentsPage({
   initialConceptId,
   onAssessmentGenerated,
   onCloseAssessment,
-  assessmentToOpenId
+  assessmentToOpenId,
+  assessment,
+  setAssessment,
+  responses,
+  setResponses,
+  results,
+  setResults
 }: {
   headers: () => Record<string, string>,
   refresh: () => Promise<void>,
   initialConceptId?: number | null,
   onAssessmentGenerated: (assessmentId: number) => void,
   onCloseAssessment: () => void,
-  assessmentToOpenId?: number | null
+  assessmentToOpenId?: number | null,
+  assessment: any,
+  setAssessment: React.Dispatch<React.SetStateAction<any>>,
+  responses: Record<number, string>,
+  setResponses: React.Dispatch<React.SetStateAction<Record<number, string>>>,
+  results: Record<number, any>,
+  setResults: React.Dispatch<React.SetStateAction<Record<number, any>>>
 }) {
   const [concepts, setConcepts] = useState<any[]>([])
-  const [selectedId, setSelectedId] = useState<number | null>(initialConceptId || null)
-  const [assessment, setAssessment] = useState<any>(null)
-  const [responses, setResponses] = useState<Record<number, string>>({})
-  const [results, setResults] = useState<Record<number, any>>({})
+  const [selectedId, setSelectedId] = useState<number | null>(() => {
+    if (assessment?.concept_id) return assessment.concept_id
+    return initialConceptId || null
+  })
   const [questionCount, setQuestionCount] = useState(10)
   const [questionTypes, setQuestionTypes] = useState<Array<'multiple_choice' | 'true_false'>>(['multiple_choice'])
   const [providerMode, setProviderMode] = useState<'gemini' | 'ollama' | 'groq'>(
@@ -2099,9 +2205,18 @@ function AssessmentsPage({
       .then(r => r.ok ? r.json() : [])
       .then(list => {
         setConcepts(list)
-        if (!selectedId && list.length > 0) setSelectedId(list[0].id)
+        if (!selectedId && list.length > 0) {
+          setSelectedId(assessment?.concept_id || list[0].id)
+        }
       })
   }, [])
+
+  useEffect(() => {
+    if (assessment?.concept_id) {
+      setSelectedId(assessment.concept_id)
+    }
+  }, [assessment?.concept_id])
+
   useEffect(() => {
     fetch(API + '/chat/providers', { headers: headers() })
       .then(response => response.ok ? response.json() : null)
@@ -2140,11 +2255,13 @@ function AssessmentsPage({
   }, [])
 
   useEffect(() => {
-    if (initialConceptId) {
+    if (initialConceptId && initialConceptId !== selectedId) {
       setSelectedId(initialConceptId)
-      setAssessment(null)
-      setResponses({})
-      setResults({})
+      if (assessment && (assessment.concept_id !== initialConceptId || Object.keys(results).length > 0)) {
+        setAssessment(null)
+        setResponses({})
+        setResults({})
+      }
     }
   }, [initialConceptId])
 
@@ -2164,6 +2281,7 @@ function AssessmentsPage({
           setResults({})
           setMessage('')
           localStorage.removeItem('remindPendingAssessmentId')
+          onCloseAssessment()
         }
       })
       .catch(error => {
@@ -2268,6 +2386,9 @@ function AssessmentsPage({
       if (r.ok) {
         setResults(Object.fromEntries(data.results.map((result: any) => [result.question_id, result])))
         setMessage(`Assessment complete: ${data.score}/${data.max_score} correct.`)
+        localStorage.removeItem('remindPendingAssessmentId')
+        localStorage.removeItem('remindUnsubmittedAssessment')
+        onCloseAssessment()
         await refresh()
       } else {
         setMessage(data.detail || 'Could not submit assessment.')
@@ -2284,6 +2405,8 @@ function AssessmentsPage({
     setResponses({})
     setResults({})
     setMessage('')
+    localStorage.removeItem('remindPendingAssessmentId')
+    localStorage.removeItem('remindUnsubmittedAssessment')
     onCloseAssessment()
   }
 
@@ -2308,6 +2431,7 @@ function AssessmentsPage({
                   setResponses({})
                   setResults({})
                   setMessage('')
+                  localStorage.removeItem('remindUnsubmittedAssessment')
                 }}
                 style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border-input)', fontFamily: 'inherit', fontSize: 13 }}
               >
@@ -2514,21 +2638,44 @@ function AssessmentsPage({
                   </div>
                 )
               })}
+              {Object.keys(results).length > 0 && (
+                <div className="theme-surface-muted" style={{ padding: '14px 18px', borderRadius: 10, margin: '16px 0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+                  <div>
+                    <b style={{ fontSize: 14 }}>Assessment Completed</b>
+                    <p style={{ margin: '4px 0 0', fontSize: 13, opacity: 0.85 }}>Your answers and decay risk updates have been recorded.</p>
+                  </div>
+                  <button type="button" className="dark-btn" onClick={closeAssessment}>
+                    Done & Clear Assessment
+                  </button>
+                </div>
+              )}
               <div className="assessment-actions">
-                <button
-                  className="dark-btn"
-                  onClick={submitAssessment}
-                  disabled={submitting || Object.keys(results).length > 0 || !assessment.questions.every((question: any) => Object.prototype.hasOwnProperty.call(responses, String(question.id)))}
-                >
-                  {submitting ? 'Grading assessment…' : 'Submit assessment'}
-                </button>
-                <button
-                  type="button"
-                  className="light-btn assessment-close-btn"
-                  onClick={closeAssessment}
-                >
-                  Close assessment
-                </button>
+                {Object.keys(results).length === 0 ? (
+                  <>
+                    <button
+                      className="dark-btn"
+                      onClick={submitAssessment}
+                      disabled={submitting || !assessment.questions?.every((question: any) => Object.prototype.hasOwnProperty.call(responses, String(question.id)))}
+                    >
+                      {submitting ? 'Grading assessment…' : 'Submit assessment'}
+                    </button>
+                    <button
+                      type="button"
+                      className="light-btn assessment-close-btn"
+                      onClick={closeAssessment}
+                    >
+                      Discard & Close
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="light-btn assessment-close-btn"
+                    onClick={closeAssessment}
+                  >
+                    Close assessment
+                  </button>
+                )}
               </div>
             </div>
           )}
