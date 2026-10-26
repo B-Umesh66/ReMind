@@ -791,15 +791,23 @@ async def send_chat_message(
     u: User = Depends(current_user), s: Session = Depends(db),
 ):
     conversation = owned_chat(s, u, conversation_id)
-    selected_provider = body.provider or conversation.provider_preference
-    if selected_provider == 'auto':
-        selected_provider = 'gemini' if provider.gemini.api_key else 'ollama'
-    if selected_provider not in {'gemini', 'ollama', 'groq'}:
+    requested_provider = body.provider or conversation.provider_preference
+    selected_provider = requested_provider
+    if selected_provider not in {'auto', 'gemini', 'ollama', 'groq'}:
         raise HTTPException(422, 'Invalid AI provider')
     selected_model = body.model
-    if not selected_model and conversation.provider_preference == selected_provider:
+    if not selected_model and requested_provider != 'auto' and conversation.provider_preference == selected_provider:
         selected_model = conversation.model_preference
-    if selected_provider == 'ollama':
+    if selected_provider == 'auto':
+        selected_model = selected_model or (
+            GEMINI_DEFAULT_MODEL if provider.gemini.api_key else OLLAMA_CHAT_DEFAULT_MODEL
+        )
+        if provider.gemini.api_key:
+            if selected_model not in GEMINI_ALL_SUPPORTED_MODELS:
+                raise HTTPException(422, 'Unsupported Gemini model for auto mode')
+        elif selected_model not in OLLAMA_CHAT_MODEL_OPTIONS:
+            raise HTTPException(422, 'Unsupported Ollama model for auto mode')
+    elif selected_provider == 'ollama':
         if selected_model and selected_model not in OLLAMA_CHAT_MODEL_OPTIONS:
             raise HTTPException(422, 'Unsupported Ollama model')
         if not selected_model:
@@ -891,7 +899,7 @@ async def send_chat_message(
             answer = await provider.generate_chat(ollama_system_prompt, user_prompt, mode='gemini', model=selected_model)
             provider.last_provider = 'gemini'
         else:
-            answer = await provider.generate(prompt, mode=selected_provider, model=selected_model)
+            answer = await provider.generate_chat(ollama_system_prompt, user_prompt, mode='auto', model=selected_model)
         if not answer:
             raise InvalidAIResponse('Language model returned an empty response.')
     except (AIConfigurationError, AICloudError, AIUnavailable, InvalidAIResponse) as error:
@@ -903,7 +911,11 @@ async def send_chat_message(
     assistant = ChatMessage(
         conversation_id=conversation.id, role='assistant', content=answer,
         provider_used=provider.last_provider,
-        model_used=selected_model,
+        model_used=(
+            OLLAMA_CHAT_DEFAULT_MODEL
+            if provider.last_provider == 'ollama' and selected_provider == 'auto'
+            else selected_model
+        ),
         generation_duration_ms=duration, status='complete',
     )
     if conversation.title == 'New study chat':
@@ -1277,4 +1289,3 @@ def get_icon_png():
 def web_root():
     if (WEB_DIST/'index.html').exists(): return FileResponse(WEB_DIST/'index.html')
     return {'message':'Frontend is not built. Run npm run build in frontend, or npm run dev and open http://localhost:5173.'}
-

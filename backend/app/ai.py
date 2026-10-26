@@ -32,18 +32,10 @@ GEMINI_DEFAULT_MODEL = 'gemini-3.1-flash-lite'
 GEMINI_MODEL_LABELS = {
     'gemini-3.1-flash-lite': 'Gemini 3.1 Flash Lite',
     'gemini-3.5-flash-lite': 'Gemini 3.5 Flash Lite',
-    'gemini-2.5-flash-lite': 'Gemini 2.5 Flash Lite (Legacy)',
-    'gemini-2.5-flash': 'Gemini 2.5 Flash (Legacy)',
-    'gemini-2.0-flash': 'Gemini 2.0 Flash',
-    'gemini-flash-latest': 'Gemini Flash Latest',
 }
 GEMINI_ALL_SUPPORTED_MODELS = (
     'gemini-3.1-flash-lite',
     'gemini-3.5-flash-lite',
-    'gemini-2.5-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-2.0-flash',
-    'gemini-flash-latest',
 )
 
 
@@ -545,12 +537,19 @@ class HybridAIProvider:
         # 'auto' mode
         if not self.gemini.api_key:
             self.last_provider = 'ollama'
-            if model:
-                return await self.ollama.generate_chat_with_model(system_prompt, user_prompt, model)
             return await self.ollama.generate_chat(system_prompt, user_prompt)
         self.last_provider = 'gemini'
         full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
-        return await (self.gemini.generate(full_prompt, model=model) if model else self.gemini.generate(full_prompt))
+        try:
+            return await (self.gemini.generate(full_prompt, model=model) if model else self.gemini.generate(full_prompt))
+        except AICloudError as error:
+            if not error.retryable:
+                raise
+            logger.warning('gemini_chat_fallback reason=%s', str(error))
+            self.fallback_used = True
+            result = await self.ollama.generate_chat(system_prompt, user_prompt)
+            self.last_provider = 'ollama'
+            return result
 
     async def structured(self, prompt:str, schema:type[T], *, mode: str | None = None, model: str | None = None)->T:
         selected = self._selected_mode(mode)

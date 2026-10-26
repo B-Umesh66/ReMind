@@ -35,14 +35,8 @@ def test_gemini_model_registry_configuration():
     assert GEMINI_DEFAULT_MODEL == "gemini-3.1-flash-lite"
 
     # Deprecated models must NOT be in the selectable options
-    assert "gemini-2.5-flash-lite" not in GEMINI_MODEL_OPTIONS
-    assert "gemini-2.5-flash" not in GEMINI_MODEL_OPTIONS
-
-    # But they are recognized in GEMINI_ALL_SUPPORTED_MODELS so old requests can be diagnosed cleanly
-    assert "gemini-2.5-flash-lite" in GEMINI_ALL_SUPPORTED_MODELS
-    assert "gemini-2.5-flash" in GEMINI_ALL_SUPPORTED_MODELS
-
-    # Labels match official display names
+    assert len(GEMINI_MODEL_OPTIONS) == 2
+    assert GEMINI_ALL_SUPPORTED_MODELS == GEMINI_MODEL_OPTIONS
     assert GEMINI_MODEL_LABELS["gemini-3.1-flash-lite"] == "Gemini 3.1 Flash Lite"
     assert GEMINI_MODEL_LABELS["gemini-3.5-flash-lite"] == "Gemini 3.5 Flash Lite"
 
@@ -61,9 +55,6 @@ def test_chat_providers_endpoint_returns_verified_gemini_models():
     model_ids = [m["id"] for m in gemini_entry.get("models", [])]
     assert "gemini-3.1-flash-lite" in model_ids
     assert "gemini-3.5-flash-lite" in model_ids
-    # Deprecated models are NOT exposed as selectable options
-    assert "gemini-2.5-flash-lite" not in model_ids
-    assert "gemini-2.5-flash" not in model_ids
 
 
 def test_create_chat_conversation_validates_gemini_models():
@@ -150,6 +141,43 @@ def test_send_chat_message_uses_actual_gemini_model(monkeypatch):
     # Verify that the actual model argument was passed to gemini.generate
     mock_generate.assert_awaited_once()
     assert mock_generate.await_args.kwargs.get("model") == "gemini-3.5-flash-lite"
+
+
+def test_chat_auto_falls_back_to_ollama_for_retryable_gemini_failure(monkeypatch):
+    client = TestClient(app)
+    headers = register_user(client, "gemini_auto_fallback")
+    created = client.post(
+        "/api/v1/chat/conversations",
+        headers=headers,
+        json={"provider_preference": "ollama"},
+    )
+    conversation_id = created.json()["id"]
+
+    gemini_generate = AsyncMock(
+        side_effect=AICloudError("Gemini temporarily unavailable", retryable=True)
+    )
+    ollama_generate = AsyncMock(return_value="Answer from local Ollama.")
+    monkeypatch.setattr(provider.gemini, "api_key", "mock-api-key")
+    monkeypatch.setattr(provider.gemini, "generate", gemini_generate)
+    monkeypatch.setattr(provider.ollama, "generate_chat", ollama_generate)
+
+    response = client.post(
+        f"/api/v1/chat/conversations/{conversation_id}/messages",
+        headers=headers,
+        json={
+            "content": "Explain normalization",
+            "provider": "auto",
+            "model": "gemini-3.5-flash-lite",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    message = response.json()["message"]
+    assert message["provider_used"] == "ollama"
+    assert message["model_used"] == "qwen2.5:3b"
+    assert message["content"] == "Answer from local Ollama."
+    gemini_generate.assert_awaited_once()
+    ollama_generate.assert_awaited_once()
 
 
 def test_assessment_generation_uses_actual_gemini_model(monkeypatch):

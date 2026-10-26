@@ -7,7 +7,7 @@ Optional Gemini generation is configured only in the backend environment:
 ```powershell
 $env:AI_PROVIDER_MODE="auto"       # auto, gemini, or ollama
 $env:GEMINI_API_KEY="your-key"     # required for gemini/auto cloud use
-$env:GEMINI_MODEL="gemini-2.0-flash"
+$env:GEMINI_MODEL="gemini-3.1-flash-lite"
 ```
 
 Use `AI_PROVIDER_MODE=ollama` for privacy-preserving local-only mode. In `auto`, temporary Gemini timeouts and service failures fall back to Ollama; invalid keys and quota errors are reported instead of silently switching providers. Document embeddings remain local in all modes.

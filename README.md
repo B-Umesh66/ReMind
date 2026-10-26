@@ -9,7 +9,7 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
 - **Privacy-Preserving Local Embeddings:** Document chunk embeddings always run locally via Ollama (`qwen3-embedding:0.6b`), ensuring raw uploaded documents are never leaked to external cloud providers during ingestion.
 - **Multi-Provider AI Architecture:**
   - **Ollama (local):** Local generation using models like `qwen2.5:3b` and `qwen3:4b`.
-  - **Google Gemini (cloud):** Cloud generation using `gemini-2.0-flash` or `gemini-flash-latest`.
+  - **Google Gemini (cloud):** Cloud generation using `gemini-3.1-flash-lite` or `gemini-3.5-flash-lite`.
   - **Groq (cloud):** High-speed cloud generation with curated models:
     - `openai/gpt-oss-20b` (Default)
     - `qwen/qwen3.8-27b`
@@ -40,7 +40,7 @@ Key configuration settings:
   - `GROQ_TIMEOUT_SECONDS=120`
 - **Gemini (Optional Cloud Provider):**
   - `GEMINI_API_KEY=...`
-  - `GEMINI_MODEL=gemini-2.0-flash`
+  - `GEMINI_MODEL=gemini-3.1-flash-lite`
 - **Default AI Provider Mode:** `AI_PROVIDER_MODE=ollama` (or `groq` / `gemini`).
 
 > [!NOTE]
