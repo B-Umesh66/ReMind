@@ -235,32 +235,47 @@ def question_key(prompt: str) -> str:
     return re.sub(r'[^\w]+', ' ', prompt.casefold(), flags=re.UNICODE).strip()
 
 def valid_generated_question(item: GeneratedQuestion, source_count: int, question_types: list[str]) -> bool:
-    return item.source_index < source_count and item.kind in question_types and (
-        (item.kind == 'multiple_choice' and len(item.options) == 4) or
-        (item.kind == 'true_false' and len(item.options) == 2)
-    )
+    if item.source_index < 0 or item.source_index >= source_count or item.kind not in question_types:
+        return False
+    expected_count = 4 if item.kind == 'multiple_choice' else 2
+    if len(item.options) != expected_count or any(not option.strip() for option in item.options):
+        return False
+    normalized_options = [re.sub(r'\s+', ' ', option.strip()).casefold() for option in item.options]
+    return len(set(normalized_options)) == len(normalized_options) and resolve_answer_option(item.answer, item.options) is not None
+
+def resolve_answer_option(answer: str, options: list[str]) -> Optional[tuple[int, str]]:
+    cleaned = re.sub(r'\s+', ' ', answer.strip()).casefold()
+    label_match = re.fullmatch(r'(?:option\s*)?([a-z])(?:[\s.)\-:]+(.*))?', cleaned)
+    if label_match:
+        index = ord(label_match.group(1)) - ord('a')
+        if 0 <= index < len(options):
+            suffix = label_match.group(2)
+            if not suffix or suffix == re.sub(r'\s+', ' ', options[index].strip()).casefold():
+                return index, options[index]
+    for index, option in enumerate(options):
+        if cleaned == re.sub(r'\s+', ' ', option.strip()).casefold():
+            return index, option
+    return None
+
+def correct_option(question: Question) -> Optional[tuple[int, str]]:
+    try:
+        options = json.loads(question.options_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(options, list) or not all(isinstance(option, str) for option in options):
+        return None
+    return resolve_answer_option(question.answer, options)
 
 def answer_matches(question: Question, response: str) -> bool:
-    submitted = response.strip().casefold()
-    expected = question.answer.strip().casefold()
-    if submitted == expected:
-        return True
     try:
         options = json.loads(question.options_json)
     except (TypeError, json.JSONDecodeError):
         options = []
-    if not isinstance(options, list):
+    if not isinstance(options, list) or not all(isinstance(option, str) for option in options):
         return False
-    for index, option in enumerate(options):
-        if not isinstance(option, str):
-            continue
-        label = chr(ord('a') + index)
-        labels = {label, f'{label}.', f'option {label}'}
-        if expected in labels and submitted == option.strip().casefold():
-            return True
-        if submitted in labels and expected == option.strip().casefold():
-            return True
-    return False
+    expected_option = resolve_answer_option(question.answer, options)
+    submitted_option = resolve_answer_option(response, options)
+    return expected_option is not None and submitted_option is not None and expected_option[0] == submitted_option[0]
 
 @app.get('/api/v1/health')
 async def health():
@@ -1009,7 +1024,10 @@ async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s
           f"Every question must be one of these kinds: {selected_types}. Do not invent facts. "
           "Do not repeat, paraphrase, or lightly reword any excluded question. "
           f"Focus this batch on {objective}. Prefer facts not already tested and use different source passages. "
-          "For multiple_choice use exactly four options; for true_false use options [True,False]. "
+          "For multiple_choice use exactly four distinct options, and make every option a complete, plausible answer. "
+          "Do not use bare category names when the question asks for a definition, comparison, cause, or process. "
+          "For true_false use options [True,False]. The answer field must be the exact full text of the correct option, "
+          "not a letter or option number. Ensure the explanation supports that exact option. "
           "Keep each prompt and explanation concise. Return valid JSON only. "
           "Schema: {questions:[{kind,prompt,options,answer,explanation,source_index}]}."
           f"\n\nExcluded questions:\n{excluded or '- None'}\n\nSource passages:\n{attempt_sources}")
@@ -1060,7 +1078,10 @@ async def create_assessment(body:AssessmentCreate,u:User=Depends(current_user),s
     persistence_started=time.perf_counter()
     a=Assessment(user_id=u.id,title=f'{c.name} recall check');s.add(a);s.flush()
     for item in valid:
-        s.add(Question(assessment_id=a.id,concept_id=c.id,kind=item.kind,prompt=item.prompt,options_json=json.dumps(item.options),answer=item.answer,explanation=item.explanation,source_chunk_id=chunks[item.source_index].id))
+        resolved_answer = resolve_answer_option(item.answer, item.options)
+        if resolved_answer is None:
+            continue
+        s.add(Question(assessment_id=a.id,concept_id=c.id,kind=item.kind,prompt=item.prompt,options_json=json.dumps(item.options),answer=resolved_answer[1],explanation=item.explanation,source_chunk_id=chunks[item.source_index].id))
     s.commit()
     persistence_ms=(time.perf_counter()-persistence_started)*1000
     questions=s.scalars(select(Question).where(Question.assessment_id==a.id).order_by(Question.id)).all()
@@ -1156,6 +1177,7 @@ def submit_assessment(assessment_id:int,body:AssessmentSubmit,u:User=Depends(cur
         correct=answer_matches(question, response)
         score=int(correct)
         feedback=question.explanation if correct else f'Not yet correct. {question.explanation}'
+        resolved_answer = correct_option(question)
         s.add(Attempt(
             user_id=u.id,
             question_id=question.id,
@@ -1184,6 +1206,9 @@ def submit_assessment(assessment_id:int,body:AssessmentSubmit,u:User=Depends(cur
             'max_score':1,
             'correct':correct,
             'feedback':feedback,
+            'selected_answer':response,
+            'correct_option_index':resolved_answer[0] if resolved_answer else None,
+            'correct_answer':resolved_answer[1] if resolved_answer else question.answer,
             'decay_risk':profile.decay_risk
         })
     assessment.status='completed'

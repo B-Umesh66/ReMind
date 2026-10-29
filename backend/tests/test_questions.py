@@ -51,6 +51,31 @@ def test_answer_matching_accepts_ollama_option_label_and_selected_text():
     assert answer_matches(question, "A")
     assert not answer_matches(question, "Wrong answer")
 
+def test_answer_matching_normalizes_option_labels_and_returns_canonical_option():
+    from app.main import Question, correct_option
+
+    question = Question(
+        kind="multiple_choice",
+        prompt="Which item is correct?",
+        options_json='["Correct answer", "Wrong answer", "Another answer", "None"]',
+        answer="A.",
+    )
+    assert answer_matches(question, "option a")
+    assert answer_matches(question, "A. Correct answer")
+    assert answer_matches(question, "Correct answer")
+    assert not answer_matches(question, "B")
+    assert correct_option(question) == (0, "Correct answer")
+
+def test_valid_generated_question_rejects_answer_not_in_options():
+    question = GeneratedQuestion(
+        kind="multiple_choice",
+        prompt="Which process describes memory decay?",
+        options=["A complete answer", "Another answer", "A third answer", "A fourth answer"],
+        answer="E",
+        source_index=0,
+    )
+    assert not valid_generated_question(question, 1, ["multiple_choice"])
+
 
 def test_structured_accepts_json_followed_by_model_prose(monkeypatch):
     provider = OllamaProvider()
@@ -175,6 +200,9 @@ def test_assessment_submission_scores_questions_and_updates_status(monkeypatch):
     assert submitted.status_code == 200, submitted.text
     assert submitted.json()["score"] == 5
     assert len(submitted.json()["results"]) == 5
+    assert submitted.json()["results"][0]["correct_answer"] == "A"
+    assert submitted.json()["results"][0]["correct_option_index"] == 0
+    assert submitted.json()["results"][0]["selected_answer"] == "A"
 
     detail = client.get(f"/api/v1/assessments/{assessment_id}", headers=headers)
     assert detail.json()["status"] == "completed"

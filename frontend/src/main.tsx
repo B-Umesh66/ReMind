@@ -1475,7 +1475,7 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
     const activeModel = providerMode === 'groq' ? groqModel : providerMode === 'gemini' ? geminiModel : ollamaModel
     let conversation = retryMessage
       ? conversations.find(item => item.id === retryMessage.conversationId) || active
-      : active || conversations[0]
+      : active
     if (!conversation) {
       const response = await fetch(API + '/chat/conversations', {
         method: 'POST', headers: { ...headers(), 'Content-Type': 'application/json' },
@@ -2600,7 +2600,9 @@ function AssessmentsPage({
                           <button
                             key={oi}
                             type="button"
-                            className={`question-option ${responses[q.id] === opt ? 'selected' : ''}`}
+                            className={`question-option ${responses[q.id] === opt ? 'selected' : ''} ${
+                              res && res.correct_answer === opt ? 'correct-option' : ''
+                            } ${res && responses[q.id] === opt && !res.correct ? 'incorrect-option' : ''}`}
                             onClick={() => !Object.keys(results).length && setResponses(p => ({ ...p, [q.id]: opt }))}
                             disabled={submitting || Object.keys(results).length > 0}
                           >
@@ -2616,7 +2618,9 @@ function AssessmentsPage({
                           <button
                             key={opt}
                             type="button"
-                            className={`question-option ${responses[q.id] === opt ? 'selected' : ''}`}
+                            className={`question-option ${responses[q.id] === opt ? 'selected' : ''} ${
+                              res && res.correct_answer === opt ? 'correct-option' : ''
+                            } ${res && responses[q.id] === opt && !res.correct ? 'incorrect-option' : ''}`}
                             onClick={() => !Object.keys(results).length && setResponses(p => ({ ...p, [q.id]: opt }))}
                             disabled={submitting || Object.keys(results).length > 0}
                           >
@@ -2630,6 +2634,11 @@ function AssessmentsPage({
                       <div className={`feedback-box ${res.correct ? 'correct' : 'incorrect'}`}>
                         <b>{res.correct ? '✓ Correct' : '✕ Needs Review'} (Score: {res.score}/1)</b>
                         <p style={{ marginTop: 4 }}>{res.feedback}</p>
+                        {!res.correct && res.correct_answer && (
+                          <p className="correct-answer">
+                            <strong>Correct option:</strong> {String.fromCharCode(65 + (res.correct_option_index ?? 0))}. {res.correct_answer}
+                          </p>
+                        )}
                         {res.decay_risk !== undefined && (
                           <small style={{ display: 'block', marginTop: 4, opacity: 0.8 }}>Updated concept decay risk: {res.decay_risk}%</small>
                         )}
