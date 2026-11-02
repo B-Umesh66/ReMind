@@ -476,9 +476,10 @@ class HybridAIProvider:
     def _selected_mode(self, mode: str | None) -> str:
         selected = (mode or self.mode).strip().lower()
         if selected not in {'gemini', 'ollama', 'groq', 'auto'}:
-            raise AIConfigurationError('AI provider mode must be gemini, ollama, or groq.')
+            raise AIConfigurationError('AI provider mode must be gemini, ollama, groq, or auto.')
         return selected
     async def generate(self, prompt:str, output_format:dict[str,Any]|str|None=None, *, mode: str | None = None, model: str | None = None)->str:
+        self.fallback_used = False
         selected = self._selected_mode(mode)
         if selected=='ollama':
             self.last_provider='ollama'
@@ -519,6 +520,7 @@ class HybridAIProvider:
             return result
 
     async def generate_chat(self, system_prompt: str, user_prompt: str, *, mode: str | None = None, model: str | None = None) -> str:
+        self.fallback_used = False
         selected = self._selected_mode(mode)
         if selected == 'ollama':
             self.last_provider = 'ollama'
@@ -537,7 +539,11 @@ class HybridAIProvider:
         # 'auto' mode
         if not self.gemini.api_key:
             self.last_provider = 'ollama'
-            return await self.ollama.generate_chat(system_prompt, user_prompt)
+            ollama_model = model if model in OLLAMA_CHAT_MODEL_OPTIONS else None
+            return await (
+                self.ollama.generate_chat_with_model(system_prompt, user_prompt, ollama_model)
+                if ollama_model else self.ollama.generate_chat(system_prompt, user_prompt)
+            )
         self.last_provider = 'gemini'
         full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
         try:
@@ -552,6 +558,7 @@ class HybridAIProvider:
             return result
 
     async def structured(self, prompt:str, schema:type[T], *, mode: str | None = None, model: str | None = None)->T:
+        self.fallback_used = False
         selected = self._selected_mode(mode)
         if selected=='ollama':
             self.last_provider='ollama'
