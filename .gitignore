@@ -1,4 +1,5 @@
 .env
+.jwt_secret
 __pycache__/
 *.py[cod]
 .venv/

@@ -47,6 +47,16 @@ type AppAlertState = {
 
 function applyTheme(theme: 'light' | 'dark') { document.documentElement.setAttribute('data-theme', theme) }
 function applyScale(scale: FontScale) { document.documentElement.setAttribute('data-fscale', scale) }
+function cleanResponseText(text: string) {
+  return text
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, '$1')
+    .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+}
 
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem('remindToken') || '')
@@ -210,11 +220,15 @@ function App() {
         handleSignOut()
         return
       }
-      if (r.ok) {
-        const u = await r.json()
-        setUser(u)
+      if (!r.ok) {
+        handleSignOut()
+        return
       }
-    } catch { } finally {
+      const u = await r.json()
+      setUser(u)
+    } catch {
+      handleSignOut()
+    } finally {
       setAuthChecking(false)
     }
   }
@@ -366,7 +380,7 @@ function App() {
       </main>
     )
   }
-  if (!token) return <LoginPage authenticate={authenticate} />
+  if (!token || !user) return <LoginPage authenticate={authenticate} />
   const shared = { token, headers, refresh: load, documentsRefreshKey }
 
   const scaleLabels: FontScale[] = ['sm', 'md', 'lg', 'xl']
@@ -1546,11 +1560,11 @@ function ChatPage({ token, headers, onAlert, onOpenAssistant }: {
     const parts = message.content.split(/```([\s\S]*?)```/g)
     return parts.map((part, index) => index % 2 === 1
       ? <pre key={index}><code>{part.replace(/^[a-z]+\n/i, '')}</code><button className="chat-copy" onClick={() => navigator.clipboard.writeText(part)} title="Copy code"><Copy size={14} /></button></pre>
-      : <span key={index}>{part.split(/(\*\*[^*]+\*\*)/g).map((text, partIndex) => text.startsWith('**') ? <strong key={partIndex}>{text.slice(2, -2)}</strong> : text)}</span>)
+      : <span key={index}>{cleanResponseText(part).split('\n').map((line, lineIndex, lines) => <span key={lineIndex}>{line}{lineIndex < lines.length - 1 && <br />}</span>)}</span>)
   }
   const copyResponse = async (message: ChatMessage) => {
     try {
-      await navigator.clipboard.writeText(message.content)
+      await navigator.clipboard.writeText(cleanResponseText(message.content))
       setCopiedMessageId(message.id)
       window.setTimeout(() => setCopiedMessageId(current => current === message.id ? null : current), 1800)
     } catch {

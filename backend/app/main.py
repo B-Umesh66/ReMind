@@ -1,11 +1,14 @@
 """ReMind API: a local-first adaptive learning service."""
 from __future__ import annotations
-import json, logging, os, re, math, time
+import json, logging, os, re, math, secrets, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Any
 import httpx
 import jwt
+from alembic import command
+from alembic.config import Config
+from alembic.util.exc import CommandError
 from passlib.context import CryptContext
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -13,7 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, delete, select, text
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, create_engine, delete, inspect, select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 from .ai import (
     provider, OLLAMA_MODEL_OPTIONS, OLLAMA_CHAT_MODEL_OPTIONS, OLLAMA_CHAT_DEFAULT_MODEL, GROQ_MODEL_OPTIONS,
@@ -29,7 +33,27 @@ engine = create_engine(DATABASE_URL, connect_args={'check_same_thread': False} i
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 security = HTTPBearer(auto_error=False)
 passwords = CryptContext(schemes=['argon2', 'pbkdf2_sha256'], deprecated='auto')
-JWT_SECRET = os.getenv('JWT_SECRET', 'development-only-change-me')
+
+def load_jwt_secret() -> str:
+    configured = os.getenv('JWT_SECRET', '').strip()
+    if configured:
+        secret = configured
+    elif os.getenv('APP_ENV', 'development').strip().lower() in {'development', 'dev', 'local', 'test'}:
+        secret_path = ROOT / 'backend' / '.jwt_secret'
+        try:
+            secret = secret_path.read_text(encoding='utf-8').strip() if secret_path.exists() else ''
+            if not secret:
+                secret = secrets.token_urlsafe(48)
+                secret_path.write_text(secret + '\n', encoding='utf-8')
+        except OSError as error:
+            raise RuntimeError('JWT_SECRET is missing and a local development secret could not be saved.') from error
+    else:
+        raise RuntimeError('JWT_SECRET must be configured outside development environments.')
+    if len(secret.encode('utf-8')) < 32:
+        raise RuntimeError('JWT_SECRET must be at least 32 bytes long.')
+    return secret
+
+JWT_SECRET = load_jwt_secret()
 
 class Base(DeclarativeBase): pass
 class User(Base):
@@ -92,21 +116,53 @@ class ChatMessage(Base):
     generation_duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default='complete')
 
-if os.getenv('ALEMBIC_RUNNING') != '1':
-    Base.metadata.create_all(engine)
+def initialize_database() -> None:
+    if os.getenv('ALEMBIC_RUNNING') == '1':
+        return
+    alembic_config = Config(str(ROOT / 'backend' / 'alembic.ini'))
+    alembic_config.set_main_option('script_location', str(ROOT / 'backend' / 'alembic'))
+    alembic_config.set_main_option('sqlalchemy.url', DATABASE_URL.replace('%', '%%'))
+    legacy_tables = {
+        'users', 'documents', 'document_chunks', 'concepts', 'knowledge_profiles',
+        'revision_recommendations', 'chunk_embeddings', 'concept_relationships',
+        'assessments', 'assessment_questions', 'assessment_attempts',
+    }
+    chat_tables = {'chat_conversations', 'chat_messages'}
     try:
-        with engine.begin() as conn:
-            if DATABASE_URL.startswith('sqlite'):
-                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(users)"))]
-                if 'display_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR(120) DEFAULT ''"))
-                if 'workspace_name' not in cols: conn.execute(text("ALTER TABLE users ADD COLUMN workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
-                chat_cols = [r[1] for r in conn.execute(text("PRAGMA table_info(chat_conversations)"))]
-                if 'model_preference' not in chat_cols: conn.execute(text(f"ALTER TABLE chat_conversations ADD COLUMN model_preference VARCHAR(128) DEFAULT '{OLLAMA_CHAT_DEFAULT_MODEL}'"))
+        with engine.connect() as conn:
+            inspector = inspect(conn)
+            tables = set(inspector.get_table_names())
+            version = (
+                conn.execute(text('SELECT version_num FROM alembic_version')).scalar()
+                if 'alembic_version' in tables else None
+            )
+            chat_columns = (
+                {column['name'] for column in inspector.get_columns('chat_conversations')}
+                if 'chat_conversations' in tables else set()
+            )
+        if tables.intersection(legacy_tables | chat_tables) and not legacy_tables.issubset(tables):
+            missing = ', '.join(sorted(legacy_tables - tables))
+            raise RuntimeError(f'Legacy database is incomplete; missing tables: {missing}.')
+        if 'alembic_version' not in tables and tables.intersection(legacy_tables | chat_tables):
+            version = None
+        if version is None and tables.intersection(legacy_tables | chat_tables):
+            if chat_tables.issubset(tables):
+                version = '20261022_0003' if 'model_preference' in chat_columns else '20261022_0002'
             else:
-                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name VARCHAR(120) DEFAULT ''"))
-                conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS workspace_name VARCHAR(120) DEFAULT 'Personal Workspace'"))
-                conn.execute(text(f"ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS model_preference VARCHAR(128) DEFAULT '{OLLAMA_CHAT_DEFAULT_MODEL}'"))
-    except Exception: pass
+                version = '20261019_0001'
+            command.stamp(alembic_config, version)
+        elif version == '20261019_0001' and chat_tables.issubset(tables):
+            version = '20261022_0003' if 'model_preference' in chat_columns else '20261022_0002'
+            command.stamp(alembic_config, version)
+        elif version is not None and 'users' not in tables:
+            raise RuntimeError('Database migration metadata exists but the users table is missing.')
+        command.upgrade(alembic_config, 'head')
+    except (SQLAlchemyError, CommandError, OSError, RuntimeError) as error:
+        logger.exception('Database migration failed; refusing to start with an incomplete schema.')
+        raise RuntimeError('Database migration failed. Check the database and restart the service.') from error
+
+if os.getenv('ALEMBIC_RUNNING') != '1':
+    initialize_database()
 def db():
     with SessionLocal() as s: yield s
 def token_for(user: User):
@@ -886,7 +942,8 @@ async def send_chat_message(
         'You are ReMind, a concise study assistant. Answer only the latest user question. '
         'Return only the final answer for the learner: 1-4 sentences for simple questions, or short '
         'bullets when useful. Do not include planning, drafts, self-evaluation, repeated answers, '
-        'reasoning, introductions, or follow-up questions. Stop immediately after the answer. '
+        'reasoning, introductions, or follow-up questions. Use plain text only: do not use Markdown '
+        'symbols such as asterisks, backticks, headings, or link syntax. Stop immediately after the answer. '
         'Example: Q: What is a stack? A: A stack is a linear data structure that follows the '
         'Last-In-First-Out (LIFO) principle. Elements are added and removed from the top.'
     )

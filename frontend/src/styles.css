@@ -190,10 +190,10 @@ select,input:not([type="checkbox"]),textarea{background:var(--bg-input);color:va
 select option{background:var(--bg-input);color:var(--text-primary)}
 h1,h2,h3,p{margin:0}
 .chat-layout{display:grid;grid-template-columns:250px minmax(0,1fr);gap:22px;height:calc(100vh - 150px);min-height:520px}
-.chat-sidebar{position:static;width:auto;background:var(--bg-aside-ws);color:var(--text-aside);padding:18px;border:1px solid var(--border-aside);border-radius:14px;display:block}
+.chat-sidebar{position:static;width:auto;min-width:0;background:var(--bg-aside-ws);color:var(--text-aside);padding:18px;border:1px solid var(--border-aside);border-radius:14px;display:block}
 .chat-sidebar .dark-btn{width:100%;justify-content:center}
 .chat-conversation-list{margin-top:18px;display:grid;gap:5px}
-.chat-conversation{display:flex;align-items:center;gap:4px;border-radius:8px}
+.chat-conversation{display:flex;align-items:center;gap:4px;min-width:0;border-radius:8px}
 .chat-conversation.active{background:var(--settings-btn-active);color:var(--settings-btn-active-text)}
 .chat-conversation-title{border:0;background:transparent;color:inherit;text-align:left;padding:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .chat-conversation-menu-wrap{position:relative;flex-shrink:0}

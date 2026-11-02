@@ -14,7 +14,7 @@ ReMind is a local-first personal learning platform. It ingests study materials, 
     - `openai/gpt-oss-20b` (Default)
     - `qwen/qwen3.8-27b`
     - `openai/gpt-oss-120b`
-- **Explicit Provider & Model Control:** Dedicated provider and model dropdown selectors in both the **Assessment Generation** and **AI Study Assistant** interfaces (with automatic mode removed in favor of intentional, predictable model selection).
+- **Explicit Provider & Model Control:** Dedicated provider and model dropdown selectors in both the **Assessment Generation** and **AI Study Assistant** interfaces. The backend also supports an optional automatic mode for environment-level fallback behavior.
 - **Interactive AI Study Assistant:** Threaded chat conversations with persistence, rename, deletion, retry capability, markdown code copying, and optional grounded RAG citations from uploaded notes.
 - **Assessment Generation & Adaptive Learning:** Assessment generation by concept with customizable question counts and types (multiple choice, true/false), deterministic grading baseline, attempt history, and analytics.
 - **Knowledge Graph & Explainable Decay Score:** Seeded concept graphs, prerequisite/relationship visualization, and transparent retention risk tracking.
@@ -33,6 +33,7 @@ cp .env.example backend/.env
 ```
 Key configuration settings:
 - **Database:** Leave `DATABASE_URL` unset for SQLite development fallback (`remind.db`), or provide a PostgreSQL connection URL.
+- **JWT secret:** Set `JWT_SECRET` to a random value of at least 32 bytes. In local development, if it is omitted, ReMind generates and persists a random secret in `backend/.jwt_secret`; production and other non-development environments require the environment variable.
 - **Ollama:** `OLLAMA_BASE_URL=http://localhost:11434`, `OLLAMA_LLM_MODEL=qwen3:4b`, `OLLAMA_EMBEDDING_MODEL=qwen3-embedding:0.6b`.
 - **Groq (Optional Cloud Provider):**
   - `GROQ_API_KEY=gsk_...`
@@ -41,7 +42,7 @@ Key configuration settings:
 - **Gemini (Optional Cloud Provider):**
   - `GEMINI_API_KEY=...`
   - `GEMINI_MODEL=gemini-3.1-flash-lite`
-- **Default AI Provider Mode:** `AI_PROVIDER_MODE=ollama` (or `groq` / `gemini`).
+- **Default AI Provider Mode:** `AI_PROVIDER_MODE=ollama` (also supports `groq`, `gemini`, or `auto`). In `auto`, Gemini is used when configured and available; supported Gemini service failures fall back to Ollama.
 
 > [!NOTE]
 > The backend dynamically checks `.env` for API keys, so you do not need to restart the server when updating keys.
